@@ -1,0 +1,88 @@
+{
+  "_comment": "Copy to /etc/server-dashboard/config.json (or point $SERVER_DASHBOARD_CONFIG at it) and change what differs at your site; keys you leave out keep these defaults. app/cbbl/config.py explains each key.",
+  "title": "CPU Cluster",
+  "subtitle": "Slurm portal",
+  "app_uri": "/pun/sys/cbbl",
+  "logout_url": "/signout",
+  "nodes": [
+    "node1",
+    "node2",
+    "node3"
+  ],
+  "login_node": "node1",
+  "no_internet_nodes": [
+    "node2"
+  ],
+  "shared_folder_node": "node3",
+  "admin_group": "clusteradmin",
+  "admin_helper": "/usr/local/sbin/portal-admin",
+  "admin_log": "/var/log/portal-admin.log",
+  "account_helper": "/usr/local/sbin/portal-account",
+  "must_change_dir": "/var/lib/portal-account/must-change",
+  "bot_file": "/var/lib/portal-notify/bot.json",
+  "slurm_bin": "/usr/bin",
+  "slurm_account": "lab",
+  "partition": "cpu",
+  "debug_partition": "debug",
+  "features": {
+    "internet": "Internet",
+    "offline": "no Internet",
+    "nfs-server": "file server"
+  },
+  "idle_status": "/var/lib/portal-idle-jobs/status.json",
+  "idle_rule": {
+    "cpu_threshold": 0.05,
+    "idle_minutes": 60,
+    "warn_minutes": 45,
+    "min_cpus": 1
+  },
+  "idle_note_prefix": "Idle check",
+  "health": {
+    "disk_warn": 90,
+    "disk_bad": 95,
+    "clock_warn": 1.0,
+    "clock_bad": 60.0,
+    "mem_warn": 0.1,
+    "idle_stale": 900,
+    "backup_max_age": 108000,
+    "backup_long_run": 93600,
+    "timers": {
+      "idle-jobs": [
+        "Idle-job check",
+        "every 5 minutes",
+        900
+      ],
+      "notify": [
+        "Telegram notifier",
+        "every minute",
+        300
+      ],
+      "home-backup": [
+        "Home backup",
+        "nightly",
+        108000
+      ]
+    },
+    "logs": [
+      [
+        "node1",
+        "idle-jobs",
+        "Idle-job check"
+      ],
+      [
+        "node1",
+        "notify",
+        "Telegram notifier"
+      ],
+      [
+        "node2",
+        "home-backup",
+        "Home backup"
+      ]
+    ],
+    "backup_node": "node2",
+    "backup_timer": "home-backup",
+    "backup_note": "",
+    "controller_note": ""
+  }
+}

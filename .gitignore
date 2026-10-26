@@ -1,0 +1,12 @@
+__pycache__/
+*.py[co]
+# a site's own settings never go in the repository (config.example.json does)
+/config.json
+/app/config.json
+# Passenger's restart file and runtime files
+/app/tmp/*
+!/app/tmp/.keep
+# screenshots and other local output
+/shots/
+.venv/
+.DS_Store

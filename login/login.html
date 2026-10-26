@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Sign in · CPU Cluster</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%233c83f6' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M22 12h-4l-3 9L9 3l-3 9H2'/%3E%3C/svg%3E">
+<script>
+  try { var t = localStorage.getItem("cbbl-theme"); if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t); } catch (e) {}
+</script>
+<style>
+  /* Portal sign-in page (served by Apache, before login). A site edits the name, the node list and the contact text. */
+  :root, [data-theme="dark"] {
+    --page: #0f1624; --panel: #0f1524; --border: #222f44; --input: #090e1a; --input-border: #26344b;
+    --text: #f1f5f9; --muted: #94a3b8; --accent: #3c83f6; --on-accent: #090e1a;
+    --red: #ef4444; --red-bg: rgba(239, 68, 68, .14); --ok-bg: rgba(60, 131, 246, .14); color-scheme: dark;
+  }
+  [data-theme="light"] {
+    --page: #f1f5f9; --panel: #ffffff; --border: #e2e8f0; --input: #ffffff; --input-border: #cbd5e1;
+    --text: #0f172a; --muted: #64748b; --accent: #2563eb; --on-accent: #ffffff;
+    --red: #dc2626; --red-bg: #fee2e2; --ok-bg: #dbeafe; color-scheme: light;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    display: flex; align-items: center; justify-content: center; padding: 16px; background: var(--page); color: var(--text);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  form { width: 100%; max-width: 384px; padding: 28px 24px 24px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); margin-bottom: 8vh; }
+  .brand { display: flex; gap: 10px; align-items: center; margin-bottom: 26px; }
+  .brand svg { width: 24px; height: 24px; color: var(--accent); flex: none; margin-top: 6px; }
+  .name { font-size: 15px; font-weight: 600; line-height: 20px; }
+  .sub { font-size: 12px; color: var(--muted); }
+  label { display: block; margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--muted); }
+  input {
+    width: 100%; height: 36px; margin-bottom: 16px; padding: 0 12px; border: 1px solid var(--input-border); border-radius: 6px;
+    background: var(--input); color: var(--text); font: inherit; outline: none;
+  }
+  input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--ok-bg); }
+  button {
+    width: 100%; height: 36px; margin-top: 2px; border: 0; border-radius: 6px; background: var(--accent); color: var(--on-accent);
+    font: 600 14px/1 inherit; font-family: inherit; cursor: pointer;
+  }
+  form:invalid button, button[disabled] { opacity: .5; }
+  .note { margin: 16px 0 0; font-size: 12px; color: var(--muted); }
+  .msg { margin: -8px 0 18px; padding: 10px 12px; border-radius: 6px; font-size: 13px; background: var(--ok-bg); }
+  .msg.error { background: var(--red-bg); color: var(--red); }
+</style>
+</head>
+<body>
+<form method="post" action="/signin" autocomplete="on">
+  <div class="brand">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+    <div><div class="name">CPU Cluster</div><div class="sub">Slurm portal</div></div>
+  </div>
+  <div class="msg error" id="failed" role="alert" hidden>Wrong username or password.</div>
+  <div class="msg" id="signedout" hidden>You are signed out.</div>
+  <div class="msg" id="changed" hidden>Password changed on node1, node2 and node3. Sign in with your new password.</div>
+  <label for="u">Username</label>
+  <input id="u" name="httpd_username" autocomplete="username" autocapitalize="none" spellcheck="false" required autofocus>
+  <label for="p">Password</label>
+  <input id="p" name="httpd_password" type="password" autocomplete="current-password" required>
+  <button type="submit">Sign in</button>
+  <p class="note">Use your cluster username and password. Contact the admin if you do not have an account.</p>
+</form>
+<script>
+  (function () {
+    var q = location.search;
+    if (/[?&]failed\b/.test(q)) document.getElementById("failed").hidden = false;
+    else if (/[?&]signedout\b/.test(q)) document.getElementById("signedout").hidden = false;
+    else if (/[?&]changed\b/.test(q)) document.getElementById("changed").hidden = false;
+    var f = document.querySelector("form");
+    f.addEventListener("submit", function () {
+      var b = f.querySelector("button");
+      setTimeout(function () { b.disabled = true; b.textContent = "Signing in…"; }, 0);
+    });
+  })();
+</script>
+</body>
+</html>
