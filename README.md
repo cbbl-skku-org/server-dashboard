@@ -93,8 +93,7 @@ Updating is copying `app/` again: each user's server reloads it within about 10 
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Security problems: see [SECURITY.md](SECURITY.md), and please don't open a
-public issue for them.
+See [CONTRIBUTING.md](CONTRIBUTING.md). Security problems: see [SECURITY.md](SECURITY.md), and please don't open a public issue for them.
 
 ## Licence
 
