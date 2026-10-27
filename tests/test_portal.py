@@ -364,7 +364,7 @@ class AdminPages(unittest.TestCase):
 
     def test_pages_render(self):
         for url, text in [("/admin/jobs", "md-run"), ("/admin/job/1300", "Requeue"), ("/admin/job/1301", "Release"),
-                          ("/admin/job/1302", ">Hold</button>"), ("/admin/nodes", "Drain"),
+                          ("/admin/job/1302", ">Hold</button>"), ("/admin/health", "Drain"),
                           ("/admin/users", "Add a user"), ("/admin/user/bob", "Lock account"),
                           ("/admin/log", "cancel job 1300 user=bob reason=&#x27;test &lt;b&gt;&#x27;")]:
             with self.subTest(url=url):
@@ -373,8 +373,10 @@ class AdminPages(unittest.TestCase):
                 self.assertIn(text, body)
                 self.assertIn("Cluster admin", body)
                 self.assertIn("Content-Security-Policy", headers)
-        status, headers, _ = call("/admin")
-        self.assertEqual((status, headers["Location"]), (303, "/pun/sys/cbbl/admin/health"))
+        for url in ("/admin", "/admin/nodes"):                    # the Nodes page is part of Health now
+            status, headers, _ = call(url)
+            self.assertEqual((status, headers["Location"]), (303, "/pun/sys/cbbl/admin/health"))
+        self.assertNotIn('href="/pun/sys/cbbl/admin/nodes"', call("/admin/jobs")[2])   # no longer in the menu
         self.assertNotIn("not Administrator", call("/admin/jobs")[2])
 
     def test_job_list_filters(self):
@@ -431,14 +433,18 @@ class AdminPages(unittest.TestCase):
         _, _, body = call("/admin/node/node2/drain", "POST", {"reason": ""}, ORIGIN)
         self.assertIn("Give a reason for draining node2", body)
         status, headers, _ = call("/admin/node/node2/drain", "POST", {"reason": "disk check on Friday"}, ORIGIN)
-        self.assertEqual((status, headers["Location"]), (303, "/pun/sys/cbbl/admin/nodes?done=drain&node=node2"))
+        self.assertEqual((status, headers["Location"]), (303, "/pun/sys/cbbl/admin/health?done=drain&node=node2"))
         self.assertEqual(fakeslurm.ADMIN_CALLS[-1], ["update", "NodeName=node2", "State=DRAIN",
                                                      "Reason=disk check on Friday"])
-        _, _, body = call("/admin/nodes?done=drain&node=node2")
+        _, _, body = call("/admin/health?done=drain&node=node2")
         self.assertIn("node2 is draining", body)
         self.assertIn(">Draining</span>", body)                  # jobs still run there
         self.assertIn("disk check on Friday", body)
         self.assertIn("/admin/node/node2/resume", body)
+        self.assertIn("Slurm: node2 is mixed drain (disk check on Friday)", body)    # and among the problems
+        _, _, inner = call("/admin/health?partial=1")
+        self.assertIn("/admin/node/node2/resume", inner)                   # the refresh keeps the buttons
+        self.assertNotIn("node2 is draining:", inner)                      # but not the one-off message
         self.assertIn("drain", call("/cluster")[2])              # users' Cluster status shows it too
         call("/admin/node/node2/resume", "POST", {}, ORIGIN)
         self.assertEqual(fakeslurm.ADMIN_CALLS[-1], ["update", "NodeName=node2", "State=RESUME"])
@@ -484,7 +490,9 @@ class AdminPages(unittest.TestCase):
                 json.dump({"updated": time.time(), "idle": {}, "cancelled": {}}, f)
             status, headers, body = call("/admin/health")
             self.assertEqual(status, 200, body[-2000:])
-            for text in ("Scheduled checks", "Idle-job check", "every 5 minutes", "Home backup (node2)",
+            for text in ("72 of 96 CPUs", "running job", ">In use</span>", ">Idle</span>", "/admin/node/node1/drain",
+                         'placeholder="Reason, e.g. disk replacement"', ">System</div>",
+                         "Scheduled checks", "Idle-job check", "every 5 minutes", "Home backup (node2)",
                          "2026-10-26_0243.partial", "Running maintenance tasks", "folder-copy-proj_carol",
                          "Slurm controller errors", "6 known warnings not shown", "Worth a look",
                          "node1 / is 91 % full (79.2 GB free)", "node3 / is 93 % full", "running for 11h 0m",
@@ -502,7 +510,10 @@ class AdminPages(unittest.TestCase):
             self.assertIn("All checks pass on all three nodes.", call("/admin/health")[2])
             fakeslurm.HEALTH_REPORT.clear()
             fakeslurm.HEALTH_REPORT.update({"ok": False, "error": "The admin helper is not available (sudo: x)."})
-            self.assertIn("Health report: The admin helper is not available", call("/admin/health")[2])
+            body = call("/admin/health")[2]
+            self.assertIn("Health report: The admin helper is not available", body)
+            for name in ("node1", "node2", "node3"):                             # Slurm's side and the buttons stay
+                self.assertIn(f"/admin/node/{name}/drain", body)
             fakeslurm.ADMINS.clear()
             self.assertEqual(call("/admin/health")[0], 404)
         finally:

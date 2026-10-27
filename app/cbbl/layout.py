@@ -22,7 +22,6 @@ NAV = [
 ADMIN_NAV = [
     ("admin-health", "Health", "/admin/health", "pulse"),
     ("admin-jobs", "All jobs", "/admin/jobs", "layers"),
-    ("admin-nodes", "Nodes", "/admin/nodes", "server"),
     ("admin-users", "Users", "/admin/users", "users"),
     ("admin-log", "Admin log", "/admin/log", "file"),
 ]

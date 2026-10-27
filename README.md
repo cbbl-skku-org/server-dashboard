@@ -8,9 +8,9 @@ It runs as an [Open OnDemand](https://openondemand.org/) system app and replaces
   (a form that builds the batch script and shows the equivalent `sbatch` command), My timeline, Cluster status,
   Test runs (quick jobs in a debug partition), History & stats (with CSV export) and Account (password, SSH keys,
   Telegram notifications).
-- **Pages for cluster admins** (members of one Unix group): Health, All jobs (cancel, hold, release, requeue with a
-  note the user sees), Nodes (drain, resume), Users (add, reset password, lock, unlock) and Admin log. Everyone else
-  gets "not found".
+- **Pages for cluster admins** (members of one Unix group): Health (routine checks of every node, with each
+  node's Slurm state and drain/resume), All jobs (cancel, hold, release, requeue with a note the user sees), Users
+  (add, reset password, lock, unlock) and Admin log. Everyone else gets "not found".
 - **Python 3.9+, standard library only.** No database, no build step, no JavaScript framework: pages are rendered on
   the server and work without JavaScript; `portal.js` only adds live refresh and small helpers.
 
@@ -38,7 +38,7 @@ python3 -m unittest discover -s tests    # fake Slurm, under a second; GitHub ru
 | `tests/test_portal.py`, `tests/test_config.py` | the unit tests |
 | `tests/fakeslurm.py` | the fake Slurm, fake root helpers and their sample answers (also the reference for their formats) |
 | `tests/dev_server.py` | the portal with the fake Slurm in a small local web server |
-| `tests/screenshot.py`, `tests/js_form_check.py`, `tests/js_job_live_check.py` | screenshots and browser checks of the JavaScript (need PyQt5 with QtWebEngine; see each file) |
+| `tests/screenshot.py`, `tests/js_form_check.py`, `tests/js_job_live_check.py`, `tests/js_refresh_check.py` | screenshots and browser checks of the JavaScript (need PyQt5 with QtWebEngine; see each file) |
 | `tests/smoke_real.py` | read-only check against a real Slurm: renders every page for one user (run as root on the cluster) |
 
 ## How it works in production
