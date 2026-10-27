@@ -58,6 +58,7 @@ FEATURES = SETTINGS["features"]
 
 # Written by the idle-job check (root, every 5 minutes): job ids and times only. Missing until the check is installed.
 IDLE_STATUS = SETTINGS["idle_status"]
+PRIORITY_FILE = SETTINGS["priority_file"]   # the Priority page's active changes (the admin helper writes it)
 IDLE_RULE = SETTINGS["idle_rule"]
 
 
@@ -540,6 +541,42 @@ def cpu_hours_by_user(days):
         except ValueError:
             pass
     return result
+
+
+def reservations():
+    """Every reservation (all users may see them): [{'name', 'users', 'nodes', 'cores', 'start', 'end', 'flags',
+    'state'}], from scontrol's one-line form. end None: no end (UNLIMITED)."""
+    out = run(["scontrol", "-o", "show", "reservation"])
+    found = []
+    for line in out.splitlines():
+        f = dict(x.split("=", 1) for x in line.split() if "=" in x)
+        if not f.get("ReservationName"):
+            continue
+        found.append({"name": f["ReservationName"], "users": [u for u in f.get("Users", "").split(",")
+                                                              if u and u != "(null)"],
+                      "nodes": f.get("Nodes", ""), "cores": int(f["CoreCnt"]) if f.get("CoreCnt", "").isdigit() else None,
+                      "start": _res_time(f.get("StartTime")), "end": _res_time(f.get("EndTime")),
+                      "flags": [x for x in f.get("Flags", "").split(",") if x], "state": f.get("State", "")})
+    return sorted(found, key=lambda r: r["start"] or 0)
+
+
+def _res_time(text):
+    try:
+        t = time.mktime(time.strptime(text or "", "%Y-%m-%dT%H:%M:%S"))
+    except ValueError:
+        return None
+    return None if t > time.time() + 20 * 365 * 86400 else t
+
+
+def priority_public():
+    """The active changes of the admins' Priority page (the admin helper writes them, without reasons, for everyone):
+    [{'id', 'kind': job|user|reservation, 'users', 'job', 'level', 'node', 'cores', 'start', 'since', 'until', 'by'}]."""
+    try:
+        with open(PRIORITY_FILE) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return []
+    return [b for b in data.get("active") or [] if isinstance(b, dict)] if isinstance(data, dict) else []
 
 
 def hostnames(text):

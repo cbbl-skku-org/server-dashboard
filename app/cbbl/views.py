@@ -7,7 +7,7 @@ import os
 import time
 
 from . import account as account_mod
-from . import jobform, slurm
+from . import admin, jobform, slurm
 from .config import SETTINGS, all_nodes, node_list
 from .layout import badge, empty, head, icon, meter, notice, page, stat_card
 from .response import Response, json_response, redirect
@@ -587,6 +587,30 @@ LANE = 30
 MAX_BARS = 2000
 
 
+def timeline_bands(req, problems, now):
+    """Shaded behind the jobs: the user's reservations (also those others asked for with them, or an admin made), their
+    requests still waiting for an admin, and maintenance windows (no jobs). Not other people's reservations."""
+    bands = []
+    for r in attempt(problems, slurm.reservations, default=[]):
+        if not r["start"]:
+            continue
+        end = r["end"] or r["start"] + 365 * 86400
+        what = f"{r['cores']} CPUs of {r['nodes']}" if r["cores"] and r["name"].startswith("prio-") else r["nodes"]
+        if "MAINT" in r["flags"]:
+            bands.append({"start": r["start"], "end": end, "kind": "maint", "label": f"Maintenance: no jobs on {r['nodes']}"})
+        elif req.user in r["users"]:
+            bands.append({"start": r["start"], "end": end, "kind": "res", "label": f"Your reservation: {what}"})
+    info = admin.helper("requests-mine")
+    if not info.get("ok"):
+        problems.append("Your reservation requests: " + info.get("error", "no answer"))
+    for q in info.get("requests") or []:
+        if q["state"] == "pending":
+            start = now if q.get("length") else q["start"]
+            bands.append({"start": start, "end": start + q["length"] if q.get("length") else q["until"], "kind": "req",
+                          "label": f"Requested: {q['cores']} CPUs of {q['node']} (waiting for an admin)"})
+    return [b for b in bands if b["end"] > now - 7 * 86400]
+
+
 def timeline(req):
     now = time.time()
     problems = []
@@ -618,7 +642,9 @@ def timeline(req):
     if len(bars) > MAX_BARS:
         bars.sort(key=lambda b: b["start"], reverse=True)
         dropped, bars = len(bars) - MAX_BARS, bars[:MAX_BARS]
-    horizon = max([now + 86400] + [min(b["plan_end"] or b["end"], now + 7 * 86400) for b in bars])
+    bands = timeline_bands(req, problems, now)
+    horizon = max([now + 86400] + [min(b["plan_end"] or b["end"], now + 7 * 86400) for b in bars]
+                  + [min(b["end"], now + 7 * 86400) for b in bands if b["start"] < now + 7 * 86400])
     t1 = (int(horizon) // 3600 + 1) * 3600
     px = PX_PER_HOUR / 3600.0
     width = int((t1 - t0) * px)
@@ -652,6 +678,13 @@ def timeline(req):
         t += 3600
 
     items = []
+    for b in sorted(bands, key=lambda b: b["start"]):
+        if b["start"] >= t1:
+            continue
+        left, right = int((max(b["start"], t0) - t0) * px), int((min(b["end"], t1) - t0) * px)
+        tip = f'{b["label"]} · {fmt_time(b["start"])} – {fmt_time(b["end"])}'
+        items.append(f'<div class="tl-band b-{b["kind"]}" style="left:{left}px;width:{max(2, right - left)}px" '
+                     f'title="{h(tip)}"><span>{h(b["label"])}</span></div>')
     for b in bars:
         j = b["job"]
         left = int((b["start"] - t0) * px)
@@ -676,10 +709,18 @@ def timeline(req):
     legend = ('<p class="legend muted small"><span class="key k-run"></span>running <span class="key k-wait"></span>'
               'waiting (estimated start) <span class="key k-done"></span>completed <span class="key k-bad"></span>'
               'failed, timed out or out of memory <span class="key k-muted"></span>cancelled</p>')
+    legend += ('<p class="legend muted small"><span class="key b-res"></span>your reservation <span class="key b-req">'
+               '</span>your request, waiting for an admin <span class="key b-maint"></span>maintenance (no jobs) · '
+               f'<a href="{link(req, "/reservations")}">Reservations</a></p>')
+    later = sorted((b for b in bands if b["start"] >= t1), key=lambda b: b["start"])
+    if later:
+        legend += ('<p class="muted small">Coming up: ' + " · ".join(
+            f'{h(b["label"])}, {h(fmt_time(b["start"]))} – {h(fmt_time(b["end"]))}' for b in later) + "</p>")
     if dropped:
         legend += f'<p class="muted small">Showing your {MAX_BARS} most recent jobs; {dropped} older ones are left out.</p>'
     body = "".join([
-        head("My timeline", "Your jobs over the last 7 days. Waiting jobs are shown striped at their estimated start."),
+        head("My timeline", "Your jobs over the last 7 days. Waiting jobs are shown striped at their estimated start; "
+                            "your reservations, waiting requests and maintenance days are shaded behind them."),
         problems_notice(problems), chart, legend,
     ])
     return page(req, "timeline", "My timeline", body)
@@ -718,11 +759,14 @@ def cluster(req):
             f'{meter(n["mem_alloc_mb"] / n["mem_mb"] if n["mem_mb"] else 0, "mem")}'
             f'<div class="node-text">{h(fmt_mb(n["mem_free_mb"]))} free of {h(fmt_mb(n["mem_mb"]))}'
             f'{" · " + " · ".join(t if t.startswith("<") else h(t) for t in tags) if tags else ""}</div></div>')
+    from .adminpriority import public_card   # adminpriority imports this module
+    priority = public_card(req, problems)
     inner = (problems_notice(problems) + f'<div class="grid stats">{cards}</div>'
-             f'<div class="grid nodes">{"".join(node_cards)}</div>')
+             f'<div class="grid nodes">{"".join(node_cards)}</div>' + priority)
     if req.partial:
         return inner
-    body = (head("Cluster status", "Free CPUs and memory on every node (no user names). Updated every 5 seconds.")
+    body = (head("Cluster status", "Free CPUs and memory on every node, who has priority and which CPUs are reserved. "
+                                   "Updated every 5 seconds.")
             + f'<div data-refresh="{link(req, "/cluster?partial=1")}" data-interval="5000">{inner}</div>')
     return page(req, "cluster", "Cluster status", body)
 
@@ -943,7 +987,10 @@ def tests_post(req):
 
 EVENT_LABELS = [("done", "Job finished successfully"),
                 ("failed", "Job failed, timed out, ran out of memory or was cancelled"),
-                ("idle", "Idle warning (15 minutes before) and cancellation by the idle check")]
+                ("idle", "Idle warning (15 minutes before) and cancellation by the idle check"),
+                ("priority", "An admin gives you priority or reserves CPUs for you (and when it ends), or answers "
+                             "your reservation request")]
+ADMIN_EVENT_LABELS = [("requests", "Cluster admins: a member asks for a reservation, or cancels one")]
 
 
 def account(req, notes="", pw_error="", keys_text=None, key_problems=None):
@@ -995,7 +1042,8 @@ def account(req, notes="", pw_error="", keys_text=None, key_problems=None):
     if settings.get("ok"):
         events = settings.get("events") or {}
         boxes = "".join(f'<label class="check"><input type="checkbox" name="ev_{k}" value="1"'
-                        f'{" checked" if events.get(k) else ""}><span>{h(label)}</span></label>' for k, label in EVENT_LABELS)
+                        f'{" checked" if events.get(k) else ""}><span>{h(label)}</span></label>'
+                        for k, label in EVENT_LABELS + (ADMIN_EVENT_LABELS if req.is_admin else []))
         how = (f'Open <a href="https://t.me/{h(bot)}" rel="noopener">@{h(bot)}</a> in Telegram and press Start, '
                if bot else "Start a chat with the cluster's bot, ")
         tg = (f'<form method="post" action="{link(req, "/account/telegram")}"><label for="a-chat">Telegram chat ID'
@@ -1046,7 +1094,7 @@ def account_keys(req):
 
 def account_telegram(req):
     data = {"chat_id": req.form.get("chat_id", "").strip(),
-            "events": {k: req.form.get(f"ev_{k}") == "1" for k, _ in EVENT_LABELS}}
+            "events": {k: req.form.get(f"ev_{k}") == "1" for k, _ in EVENT_LABELS + ADMIN_EVENT_LABELS}}
     answer = account_mod.helper("telegram-set", data)
     if not answer.get("ok"):
         return account(req, notice("error", h(answer.get("error", "Not saved."))))

@@ -8,6 +8,7 @@ import time
 import urllib.parse
 
 from . import admin, slurm
+from .adminpriority import health_line
 from .config import SETTINGS, all_nodes
 from .adminviews import NOTE_LIMIT, admin_only, level_notice, one_line, user_link
 from .layout import badge, empty, head, icon, meter, notice, page
@@ -107,6 +108,8 @@ def find_problems(report, nodes, idle, now):
             state = " ".join(s.lower() for s in n["state"]) or "unknown"
             out.append(("warn" if "DRAIN" in n["state"] and "DOWN" not in n["state"] else "bad",
                         f"Slurm: {n['name']} is {state}" + (f" ({n['reason']})" if n["reason"] else "")))
+    for text in (report.get("priority") or {}).get("problems") or []:
+        out.append(("warn", f"Priority change not undone: {text}"))
     if idle is None:
         out.append(("bad", "The idle check's status file is missing"))
     elif now - (idle.get("updated") or 0) > IDLE_STALE:
@@ -288,7 +291,8 @@ def health(req, message=""):
     inner = "".join([
         problems_notice(problems), summary(found),
         f'<div class="grid nodes">{cards}</div>',
-        f'<p class="muted small">Checked {h(fmt_time(report.get("at") or now))}</p>',
+        f'<p class="muted small">Checked {h(fmt_time(report.get("at") or now))}'
+        f'{h(health_line(report))}</p>',
         '<div class="grid two">', timers_card(report, now), backup_card(report, now), "</div>",
         tasks_card(report, now), logs_cards(report),
     ])
