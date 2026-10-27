@@ -27,8 +27,8 @@ QCoreApplication.setAttribute(Qt.AA_ShareOpenGLContexts)
 from PyQt5.QtWebEngineWidgets import QWebEngineView  # noqa: E402
 from PyQt5.QtWidgets import QApplication  # noqa: E402
 
-PAGES = [("overview", "/"), ("my_jobs", "/jobs"), ("new_job", "/new"), ("my_timeline", "/timeline"),
-         ("cluster_status", "/cluster"), ("test_runs", "/tests"), ("history_and_stats", "/history"),
+PAGES = [("overview", "/"), ("my_jobs", "/jobs"), ("new_job", "/new"), ("timeline", "/timeline"),
+         ("my_timeline", "/timeline?view=mine"), ("cluster_status", "/cluster"), ("history_and_stats", "/history"),
          ("account", "/account"), ("job_running", "/job/1187"), ("job_finished", "/job/1183"),
          ("job_pending", "/job/1190"), ("job_oom", "/job/1180"),
          ("admin_health", "/admin/health"), ("admin_jobs", "/admin/jobs"), ("admin_job", "/admin/job/1300"),

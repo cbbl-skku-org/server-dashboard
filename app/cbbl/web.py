@@ -31,8 +31,7 @@ ROUTES = [
     ("GET", r"/cluster", views.cluster),
     ("GET", r"/history", views.history),
     ("GET", r"/history\.csv", views.history_csv),
-    ("GET", r"/tests", views.tests),
-    ("POST", r"/tests", views.tests_post),
+    ("GET", r"/tests", views.tests_moved),                # removed 2026-10-27: quick tests are on New job
     ("GET", r"/account", views.account),
     ("POST", r"/account/password", views.account_password),
     ("POST", r"/account/keys", views.account_keys),

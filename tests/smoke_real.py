@@ -16,8 +16,8 @@ pw = pwd.getpwnam(user)
 slurm.me = lambda: pw
 failed = 0
 jobs = slurm.my_jobs_since(user, 30)
-urls = ["/", "/jobs", "/new", "/timeline", "/cluster", "/history", "/history?days=365", "/history.csv",
-        "/tests", "/account"] + [f"/job/{j['id']}" for j in jobs[-6:]]
+urls = ["/", "/jobs", "/new", "/timeline", "/timeline?view=mine", "/timeline?range=7d", "/cluster", "/history",
+        "/history?days=365", "/history.csv", "/account"] + [f"/job/{j['id']}" for j in jobs[-6:]]
 for url in urls:
     path, _, query = url.partition("?")
     env = {"REQUEST_METHOD": "GET", "SCRIPT_NAME": "/pun/sys/cbbl", "PATH_INFO": path, "QUERY_STRING": query,

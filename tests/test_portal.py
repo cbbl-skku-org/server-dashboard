@@ -46,7 +46,8 @@ class Pages(unittest.TestCase):
     def test_every_page_renders(self):
         for url, text in [("/", "Hello, alice"), ("/jobs", "train-esm2"), ("/new", "Equivalent command"),
                           ("/timeline", "tl-bar"), ("/cluster", "node2"), ("/history", "CPU-hours per week"),
-                          ("/tests", "Test runs"), ("/account", "SSH public keys"), ("/job/1187", "Cancel job"),
+                          ("/timeline?view=mine", "tl-bar"), ("/timeline?range=7d", "All nodes"),
+                          ("/account", "SSH public keys"), ("/job/1187", "Cancel job"),
                           ("/job/1186", "Usage and efficiency"), ("/job/1190", "Not started yet"),
                           ("/job/1191_3", "md-sweep"), ("/history?days=7", "7 days")]:
             with self.subTest(url=url):
@@ -193,19 +194,15 @@ class AccountAndTests(unittest.TestCase):
         fakeslurm.SUBMITTED.clear()
         fakeslurm.HELPER_CALLS.clear()
 
-    def test_quick_test_job(self):
-        _, _, body = call("/tests")
-        self.assertIn("up to 10 minutes, 4 CPUs and 16 GB", body)
-        self.assertIn("srun -p debug --pty bash", body)
-        status, headers, body = call("/tests", "POST", {"cpus": "2", "workdir": HOME, "command": "python t.py"}, ORIGIN)
-        self.assertEqual(status, 303, body[-2000:])
-        script = fakeslurm.SUBMITTED[0]
-        self.assertIn("#SBATCH --partition=debug\n", script)
-        self.assertIn("#SBATCH --cpus-per-task=2\n", script)
-        self.assertIn("#SBATCH --mem=8G\n", script)
-        self.assertNotIn("--time", script)                           # the partition's 10 minutes
-        status, _, body = call("/tests", "POST", {"cpus": "5", "workdir": HOME, "command": "x"}, ORIGIN)
-        self.assertIn("At most 4 CPUs for a quick test.", body)
+    def test_test_runs_page_is_gone(self):
+        status, headers, _ = call("/tests")
+        self.assertEqual((status, headers["Location"]), (303, "/pun/sys/cbbl/new"))   # old links land on New job
+        self.assertEqual(call("/tests", "POST", {"cpus": "1", "command": "x"}, ORIGIN)[0], 405)
+        _, _, body = call("/")
+        self.assertNotIn("Test runs", body)
+        self.assertIn("Quick tests &amp; disk", body)
+        self.assertIn(">Timeline</span>", body)
+        self.assertNotIn("My timeline", body)
 
     def test_quick_box_on_new_job(self):
         _, _, body = call("/new")
@@ -624,18 +621,18 @@ class AdminPages(unittest.TestCase):
                  "until": time.time() + 86400}]}, f)
         fakeslurm.ADMINS.clear()                                          # an ordinary user
         try:
-            _, _, body = call("/cluster")
+            _, _, body = call("/reservations")
             for text in ("Priority and reservations (4)", "More priority for all their jobs", "permanent",
                          "Job 1302: move up", "Reserved: 12 CPUs of node2", "bob, carol",
                          "Maintenance: no jobs on node[1-3]", "Nov 22, 12:00 AM"):
                 self.assertIn(text, body)
-            self.assertIn("Priority and reservations", call("/cluster?partial=1")[2])
+            self.assertNotIn("Priority and reservations", call("/cluster")[2])   # only on Reservations (2026-10-27)
         finally:
             os.remove(path)
         saved = list(fakeslurm.RESERVATIONS)
         fakeslurm.RESERVATIONS.clear()
         try:
-            self.assertIn("Nobody has priority and no CPUs are reserved", call("/cluster")[2])
+            self.assertIn("Nobody has priority and no CPUs are reserved", call("/reservations")[2])
         finally:
             fakeslurm.RESERVATIONS[:] = saved
 
@@ -727,7 +724,7 @@ class AdminPages(unittest.TestCase):
                                   "start": now, "until": now + 86400, "length": 86400, "reason": "x", "at": now,
                                   "state": "pending"}]
         try:
-            status, _, body = call("/timeline")
+            status, _, body = call("/timeline?view=mine")
             self.assertEqual(status, 200, body[-2000:])
             for text in ('class="tl-band b-res"', "Your reservation: 16 CPUs of node3",
                          'class="tl-band b-req"', "Requested: 24 CPUs of node2 (waiting for an admin)",
@@ -735,9 +732,68 @@ class AdminPages(unittest.TestCase):
                 self.assertIn(text, body)
             self.assertNotIn("8 CPUs of node2", body)                  # other people's reservations stay off
             self.assertNotIn('class="tl-band b-maint"', body)            # 20 days ahead: listed, not drawn
+            _, _, body = call("/timeline")                               # All nodes: maintenance only
+            self.assertIn("Coming up: Maintenance: no jobs on node[1-3]", body)
+            self.assertNotIn("Your reservation", body)
+            self.assertNotIn("Requested: 24 CPUs", body)
         finally:
             fakeslurm.RESERVATIONS[:] = saved
             fakeslurm.REQUESTS.clear()
+
+    def test_timeline_all_nodes(self):
+        fakeslurm.ADMINS.clear()                                          # an ordinary user
+        try:
+            status, _, body = call("/timeline")
+            self.assertEqual(status, 200, body[-2000:])
+            for text in ('class="tab active" href="/pun/sys/cbbl/timeline?view=all" aria-current="page">All nodes',
+                         'href="/pun/sys/cbbl/timeline?view=mine">My jobs', '<option value="48h" selected>last 48 h',
+                         "<b>node1</b><span>48 CPUs</span>", "<b>node3</b><span>48 CPUs</span>",
+                         "<span>bob 24 CPUs</span>",                         # another user's running job
+                         "<span>alice 32 CPUs</span>", 'href="/pun/sys/cbbl/job/1187"',   # own: opens the job
+                         "<b>Waiting</b><span>no node yet</span>", "<span>carol 96 CPUs</span>",
+                         "<b>node3</b><span>finished</span>", "<span>bob 12 CPUs</span>",
+                         'class="tl-plan u"', 'tabindex="0" role="button"', "data-tip=", "Ends at the latest",
+                         "Colour = user"):
+                self.assertIn(text, body)
+            # a waiting job Slurm has planned on a node sits in that node's row, not under Waiting
+            waiting_row = body.split("<b>Waiting</b>")[1].split('class="tl-row"')[0]
+            self.assertNotIn("carol 4 CPUs", waiting_row)
+            self.assertIn("carol 4 CPUs", body.split("<b>node2</b><span>96 CPUs</span>")[1].split("<b>node3</b>")[0])
+            # a finished job on two nodes shows under both
+            self.assertEqual(body.count("<span>carol 4 CPUs</span>"), 3)
+            self.assertNotIn('href="/pun/sys/cbbl/job/1300"', body)        # others' jobs have no page for this user
+            _, _, body = call("/timeline?view=mine&range=24h")
+            self.assertIn('<option value="24h" selected>', body)
+            self.assertIn('href="/pun/sys/cbbl/timeline?view=all&amp;range=24h"', body)   # the tabs keep the period
+            self.assertNotIn("bob 24 CPUs", body)
+            self.assertIn('<option value="48h" selected>', call("/timeline?range=bogus")[2])
+        finally:
+            fakeslurm.ADMINS.add("alice")
+
+    def test_cluster_status_shows_who_runs_what(self):
+        status, _, body = call("/cluster?partial=1")
+        self.assertEqual(status, 200, body[-2000:])
+        for text in ("Free memory", "by 2 users", "Running jobs (ending soonest first)", "Waiting jobs (next to start "
+                     "first)", "alice <span class=\"chip-x\">32 CPUs</span>", "bob <span class=\"chip-x\">24 CPUs",
+                     'title="bob: 24 CPUs"', "md-run", "waiting for free CPUs or memory", "held by the admin",
+                     "not known yet", '<a href="/pun/sys/cbbl/job/1188">'):
+            self.assertIn(text, body)
+        self.assertNotIn('href="/pun/sys/cbbl/job/1300"', body)            # bob's job: no link
+        running = body.split("Running jobs (ending soonest first)")[1].split("Waiting jobs")[0]
+        # ending soonest first: 1188 (12 h limit) before 1187 (1 day) before 1300 (2 days)
+        self.assertLess(running.index("blast-uniref50"), running.index("train-esm2"))
+        self.assertLess(running.index("train-esm2"), running.index("md-run"))
+        waiting = body.split("Waiting jobs (next to start first)")[1]
+        self.assertLess(waiting.index(">qc<") if ">qc<" in waiting else waiting.index(" qc"), waiting.index("assembly"))
+        # node2: 72 CPUs in use, alice's 32 from squeue, the rest grey
+        self.assertIn('title="other jobs: 40 CPUs"', body)
+        self.assertEqual(slurm.cpus_on({"nodes": "node[1,3]", "cpus": 8, "node_cpus": {}}, "node3"), 4)
+
+    def test_user_colours_stay_with_a_person(self):
+        from cbbl import layout
+        self.assertEqual(layout.user_colour("bob"), layout.user_colour("bob"))
+        self.assertIn(layout.user_colour("someone-unknown"), layout.USER_COLOURS)
+        self.assertEqual(layout.chip("<x>"), f'<span class="chip" style="--uc:{layout.user_colour("<x>")}">&lt;x&gt;</span>')
 
     def test_hostnames(self):
         self.assertEqual(slurm.hostnames("cn[01,200]"), ["cn01", "cn200"])
