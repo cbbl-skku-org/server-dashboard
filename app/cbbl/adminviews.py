@@ -1,4 +1,4 @@
-"""Cluster admin pages (Unix group admin_group in the settings): every user's jobs, the nodes, the accounts and the admin log.
+"""Cluster admin pages (Unix group admin_group in the settings): every user's jobs, the accounts and the admin log (the nodes: adminhealth).
 
 Job and node actions run as the admin, with their own Slurm Administrator level (Slurm checks it and records who did
 what); account changes go through the root helper (admin_helper), which asks for the admin's own password. Every action
@@ -8,7 +8,7 @@ import urllib.parse
 
 from . import admin, slurm
 from .config import SETTINGS, all_nodes, node_list
-from .layout import badge, empty, head, icon, meter, notice, page, stat_card
+from .layout import badge, empty, head, icon, notice, page, stat_card
 from .response import redirect
 from .util import fmt_mb, fmt_num, fmt_time, h, plural
 from .views import (attempt, card, idle_badge, job_details, job_start_cell, job_time_cell, job_where_cell, kv_rows,
@@ -218,86 +218,6 @@ def job_action(req, job_id):
         return job(req, job_id, str(e))
     admin.helper("note", {"action": action, "target": f"job {j['id']} user={j['user']}", "reason": reason})
     return redirect(req.base + f"/admin/job/{j['id']}?done={action}")
-
-
-# ---------------------------------------------------------------------------------------------------- nodes
-
-@admin_only
-def nodes(req, message=""):
-    problems = []
-    node_list = attempt(problems, slurm.nodes, default=[])
-    every = attempt(problems, slurm.all_active_jobs, default=[])
-    running_on = {}
-    for j in every:
-        if j["state"] in slurm.RUNNING_STATES:
-            for name in slurm.hostnames(j["nodes"]):
-                running_on.setdefault(name, []).append(j)
-    msgs = ""
-    done, which = req.arg("done"), req.arg("node")
-    if done == "drain":
-        msgs += notice("ok", f"{h(which)} is draining: its running jobs finish, no new jobs start there.")
-    elif done == "resume":
-        msgs += notice("ok", f"{h(which)} is back in service.")
-    if message:
-        msgs += notice("error", h(message))
-    cards = []
-    for n in node_list:
-        here = running_on.get(n["name"], [])
-        drained = "DRAIN" in n["state"]
-        down = bool({"DOWN", "NOT_RESPONDING", "FAIL"} & set(n["state"]))
-        if drained:
-            state = badge("Draining" if here or n["cpus_alloc"] else "Drained", "wait")
-        elif down:
-            state = badge("Down", "bad")
-        else:
-            state = badge("Idle", "done") if n["cpus_alloc"] == 0 else badge("In use", "run")
-        reason = ""
-        if n["reason"]:
-            by = f" · {h(n['reason_by'])}" if n["reason_by"] else ""
-            at = f", {h(fmt_time(n['reason_at']))}" if n["reason_at"] else ""
-            reason = (f'<p class="node-reason">{icon("info")}<span>{h(n["reason"])}'
-                      f'<span class="muted">{by}{at}</span></span></p>')
-        users = sorted({j["user"] for j in here})
-        jobs_line = (plural(len(here), "running job") + ": " + ", ".join(user_link(req, u) for u in users)
-                     if here else "no running jobs")
-        if drained or down:
-            action = (f'<form class="inline-form" method="post" action="{link(req, "/admin/node/" + n["name"] + "/resume")}" '
-                      f'data-confirm="Put {h(n["name"])} back in service?"><button class="btn btn-sm" type="submit">'
-                      f'{icon("play")}Resume</button></form>')
-        else:
-            action = (f'<form class="inline-form" method="post" action="{link(req, "/admin/node/" + n["name"] + "/drain")}" '
-                      f'data-confirm="Drain {h(n["name"])}? Its running jobs finish; no new jobs start there until you '
-                      f'resume it."><input name="reason" maxlength="{NOTE_LIMIT}" required autocomplete="off" '
-                      f'placeholder="Reason, e.g. disk replacement on Friday" aria-label="Reason for draining {h(n["name"])}">'
-                      f'<button class="btn btn-sm" type="submit">{icon("pause")}Drain</button></form>')
-        cards.append(
-            f'<div class="card node"><div class="node-head"><span><b>{h(n["name"])}</b> · {n["cpus"]} CPUs · '
-            f'{h(fmt_mb(n["mem_mb"]))}</span>{state}</div>'
-            f'{meter(n["cpus_alloc"] / n["cpus"] if n["cpus"] else 0)}'
-            f'<div class="node-text">{n["cpus_alloc"]} of {n["cpus"]} CPUs and {h(fmt_mb(n["mem_alloc_mb"]))} of '
-            f'{h(fmt_mb(n["mem_mb"]))} in use</div>{meter(n["mem_alloc_mb"] / n["mem_mb"] if n["mem_mb"] else 0, "mem")}'
-            f'<div class="node-text">{jobs_line}</div>{reason}{action}</div>')
-    body = "".join([
-        head("Nodes", "Drain a node before maintenance: its running jobs finish and no new jobs start there. Resume "
-                      "puts it back in service."),
-        level_notice(req), problems_notice(problems), msgs, f'<div class="grid nodes">{"".join(cards)}</div>',
-    ])
-    return page(req, "admin-nodes", "Nodes", body)
-
-
-@admin_only
-def node_state(req, name, state):
-    if name not in {n["name"] for n in attempt([], slurm.nodes, default=[])}:
-        return not_found(req, f"There is no node {name}.")
-    reason = one_line(req.form.get("reason"))
-    if state == "drain" and not reason:
-        return nodes(req, f"Give a reason for draining {name}: Slurm shows it to everyone.")
-    try:
-        slurm.update_node(name, state.upper(), reason)
-    except slurm.SlurmError as e:
-        return nodes(req, str(e))
-    admin.helper("note", {"action": state, "target": name, "reason": reason})
-    return redirect(req.base + "/admin/nodes?" + urllib.parse.urlencode({"done": state, "node": name}))
 
 
 # ---------------------------------------------------------------------------------------------------- users

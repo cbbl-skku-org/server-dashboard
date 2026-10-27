@@ -1,15 +1,19 @@
 """The admins' Health page: the routine checks on every node, read by the admin
 helper as root (disks, mounts, services, timers, the home backup, logs, clocks; read-only), plus Slurm's view of the
-nodes and the idle check's status file. Problems come first; the page refreshes itself every minute."""
+nodes and the idle check's status file. Problems come first; the page refreshes itself every minute. Each node's card
+also has its Slurm side: state, CPUs and memory in use, running jobs, and drain/resume (formerly a separate Nodes
+page). Node actions run as the admin, with their own Slurm Administrator level."""
 import math
 import time
+import urllib.parse
 
 from . import admin, slurm
 from .config import SETTINGS, all_nodes
-from .adminviews import admin_only
-from .layout import badge, empty, head, meter, notice, page
-from .util import fmt_bytes, fmt_duration, fmt_time, h, plural
-from .views import attempt, card, kv_rows, problems_notice
+from .adminviews import NOTE_LIMIT, admin_only, level_notice, one_line, user_link
+from .layout import badge, empty, head, icon, meter, notice, page
+from .response import redirect
+from .util import fmt_bytes, fmt_duration, fmt_mb, fmt_time, h, plural
+from .views import attempt, card, kv_rows, link, not_found, problems_notice
 
 _H = SETTINGS["health"]                   # thresholds and names: see config.py
 DISK_WARN, DISK_BAD = _H["disk_warn"], _H["disk_bad"]
@@ -121,10 +125,53 @@ def summary(problems):
     return html
 
 
-def node_card(name, d, now):
+def slurm_state(n, here):
+    if "DRAIN" in n["state"]:
+        return badge("Draining" if here or n["cpus_alloc"] else "Drained", "wait")
+    if {"DOWN", "NOT_RESPONDING", "FAIL"} & set(n["state"]):
+        return badge("Down", "bad")
+    return badge("Idle", "done") if n["cpus_alloc"] == 0 else badge("In use", "run")
+
+
+def slurm_part(req, n, here):
+    """Slurm's side of a node card: CPUs and memory in use, running jobs, the drain reason."""
+    reason = ""
+    if n["reason"]:
+        by = f" · {h(n['reason_by'])}" if n["reason_by"] else ""
+        at = f", {h(fmt_time(n['reason_at']))}" if n["reason_at"] else ""
+        reason = (f'<p class="node-reason">{icon("info")}<span>{h(n["reason"])}'
+                  f'<span class="muted">{by}{at}</span></span></p>')
+    users = sorted({j["user"] for j in here})
+    jobs_line = (plural(len(here), "running job") + ": " + ", ".join(user_link(req, u) for u in users)
+                 if here else "no running jobs")
+    return (f'{meter(n["cpus_alloc"] / n["cpus"] if n["cpus"] else 0)}'
+            f'<div class="node-text">{n["cpus_alloc"]} of {n["cpus"]} CPUs and {h(fmt_mb(n["mem_alloc_mb"]))} of '
+            f'{h(fmt_mb(n["mem_mb"]))} in use</div>{meter(n["mem_alloc_mb"] / n["mem_mb"] if n["mem_mb"] else 0, "mem")}'
+            f'<div class="node-text">{jobs_line}</div>{reason}')
+
+
+def node_action(req, n):
+    name = h(n["name"])
+    if "DRAIN" in n["state"] or {"DOWN", "NOT_RESPONDING", "FAIL"} & set(n["state"]):
+        return (f'<form class="inline-form" method="post" action="{link(req, "/admin/node/" + n["name"] + "/resume")}" '
+                f'data-confirm="Put {name} back in service?"><button class="btn btn-sm" type="submit">'
+                f'{icon("play")}Resume</button></form>')
+    return (f'<form class="inline-form" method="post" action="{link(req, "/admin/node/" + n["name"] + "/drain")}" '
+            f'data-confirm="Drain {name}? Its running jobs finish; no new jobs start there until you '
+            f'resume it."><input name="reason" maxlength="{NOTE_LIMIT}" required autocomplete="off" '
+            f'placeholder="Reason, e.g. disk replacement" aria-label="Reason for draining {name}">'
+            f'<button class="btn btn-sm" type="submit">{icon("pause")}Drain</button></form>')
+
+
+def node_card(req, name, d, n, here, now):
+    """One node: Slurm's side (n, from scontrol; None if Slurm does not know it) and the system's (d, from the helper)."""
+    title = f"<b>{h(name)}</b>" + (f" · {n['cpus']} CPUs · {h(fmt_mb(n['mem_mb']))}" if n else "")
+    state = (slurm_state(n, here) if n else "") + ("" if d.get("reachable") else " " + badge("no answer", "bad"))
+    top = f'<div class="card node"><div class="node-head"><span>{title}</span><span>{state}</span></div>'
+    top += slurm_part(req, n, here) if n else '<p class="muted small">Slurm does not report this node.</p>'
+    action = node_action(req, n) if n else ""
     if not d.get("reachable"):
-        return (f'<div class="card node"><div class="node-head"><b>{h(name)}</b>{badge("no answer", "bad")}</div>'
-                f'<p class="muted small">{h(d.get("error"))}</p></div>')
+        return top + f'<p class="muted small">Health report: {h(d.get("error") or "no answer")}</p>{action}</div>'
     disks = ""
     for x in d["disks"]:
         pct = used_pct(x)
@@ -142,10 +189,10 @@ def node_card(name, d, now):
             ("Memory free", f"{h(fmt_bytes(d['mem_avail'] * 1024))} of {h(fmt_bytes(d['mem_total'] * 1024))}"
              if d.get("mem_total") else "—"),
             ("Clock", h(offset_text(off)) if off is not None else '<span class="bad">no time sync</span>')]
-    return (f'<div class="card node"><div class="node-head"><b>{h(name)}</b></div>{kv_rows(rows)}'
+    return (f'{top}<div class="section-title spaced">System</div>{kv_rows(rows)}'
             f'<div class="section-title spaced">Disks</div>{disks}'
             f'<div class="section-title">Services</div><div class="badges">{services}</div>'
-            f'<div class="section-title spaced">Mounts</div><div class="badges">{mounts or "—"}</div></div>')
+            f'<div class="section-title spaced">Mounts</div><div class="badges">{mounts or "—"}</div>{action}</div>')
 
 
 def timers_card(report, now):
@@ -220,7 +267,7 @@ def logs_cards(report):
 
 
 @admin_only
-def health(req):
+def health(req, message=""):
     now = time.time()
     problems = []
     report = admin.helper("health")
@@ -228,18 +275,51 @@ def health(req):
         problems.append("Health report: " + report.get("error", "no answer"))
         report = {"nodes": {}}
     nodes = attempt(problems, slurm.nodes, default=[])
+    running_on = {}
+    for j in attempt(problems, slurm.all_active_jobs, default=[]):
+        if j["state"] in slurm.RUNNING_STATES:
+            for name in slurm.hostnames(j["nodes"]):
+                running_on.setdefault(name, []).append(j)
     found = find_problems(report, nodes, slurm.idle_status(), now)
-    slurm_line = " · ".join(f"{n['name']} {' '.join(s.lower() for s in n['state'])}" for n in nodes)
+    by_slurm = {n["name"]: n for n in nodes}
+    names = sorted(set(by_slurm) | set(report.get("nodes") or {}))
+    cards = "".join(node_card(req, name, (report.get("nodes") or {}).get(name) or {"error": "not in the health report"},
+                              by_slurm.get(name), running_on.get(name, []), now) for name in names)
     inner = "".join([
         problems_notice(problems), summary(found),
-        f'<div class="grid nodes">{"".join(node_card(n, d, now) for n, d in by_name(report))}</div>',
-        f'<p class="muted small">Slurm: {h(slurm_line) or "—"} · checked {h(fmt_time(report.get("at") or now))}</p>',
+        f'<div class="grid nodes">{cards}</div>',
+        f'<p class="muted small">Checked {h(fmt_time(report.get("at") or now))}</p>',
         '<div class="grid two">', timers_card(report, now), backup_card(report, now), "</div>",
         tasks_card(report, now), logs_cards(report),
     ])
     if req.partial:
         return inner
-    body = (head("Health", f"The routine checks on {all_nodes()}, read as root. Updated every "
-                           "minute.")
+    msgs = ""
+    done, which = req.arg("done"), req.arg("node")
+    if done == "drain":
+        msgs += notice("ok", f"{h(which)} is draining: its running jobs finish, no new jobs start there.")
+    elif done == "resume":
+        msgs += notice("ok", f"{h(which)} is back in service.")
+    if message:
+        msgs += notice("error", h(message))
+    body = (head("Health", f"The routine checks and Slurm's view of {all_nodes()}, read as root. Drain a node before "
+                           "maintenance: its running jobs finish and no new jobs start there; Resume puts it back in "
+                           "service. Updated every minute.")
+            + level_notice(req) + msgs
             + f'<div data-refresh="{h(req.base)}/admin/health?partial=1" data-interval="60000">{inner}</div>')
     return page(req, "admin-health", "Health", body)
+
+
+@admin_only
+def node_state(req, name, state):
+    if name not in {n["name"] for n in attempt([], slurm.nodes, default=[])}:
+        return not_found(req, f"There is no node {name}.")
+    reason = one_line(req.form.get("reason"))
+    if state == "drain" and not reason:
+        return health(req, f"Give a reason for draining {name}: Slurm shows it to everyone.")
+    try:
+        slurm.update_node(name, state.upper(), reason)
+    except slurm.SlurmError as e:
+        return health(req, str(e))
+    admin.helper("note", {"action": state, "target": name, "reason": reason})
+    return redirect(req.base + "/admin/health?" + urllib.parse.urlencode({"done": state, "node": name}))

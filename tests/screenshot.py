@@ -29,7 +29,7 @@ PAGES = [("overview", "/"), ("my_jobs", "/jobs"), ("new_job", "/new"), ("my_time
          ("cluster_status", "/cluster"), ("test_runs", "/tests"), ("history_and_stats", "/history"),
          ("account", "/account"), ("job_running", "/job/1187"), ("job_finished", "/job/1183"),
          ("job_pending", "/job/1190"), ("job_oom", "/job/1180"),
-         ("admin_health", "/admin/health"), ("admin_jobs", "/admin/jobs"), ("admin_job", "/admin/job/1300"), ("admin_nodes", "/admin/nodes"),
+         ("admin_health", "/admin/health"), ("admin_jobs", "/admin/jobs"), ("admin_job", "/admin/job/1300"),
          ("admin_users", "/admin/users"), ("admin_user", "/admin/user/bob"), ("admin_log", "/admin/log")]
 
 

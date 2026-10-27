@@ -67,8 +67,15 @@
     var every = parseInt(el.getAttribute("data-interval"), 10) || 10000;
     var follow = el.getAttribute("data-scroll") === "end";
     if (follow) el.scrollTop = el.scrollHeight;
+    // someone is typing in a form inside the region (e.g. a drain reason on Health): wait, don't wipe it
+    function busy() {
+      var a = document.activeElement;
+      if (a && el.contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return true;
+      return Array.prototype.some.call(el.querySelectorAll("input:not([type=hidden]), textarea"),
+                                       function (i) { return i.value !== i.defaultValue; });
+    }
     function tick() {
-      if (document.hidden) { setTimeout(tick, every); return; }
+      if (document.hidden || busy()) { setTimeout(tick, every); return; }
       fetch(el.getAttribute("data-refresh"), { headers: { "X-Partial": "1" }, credentials: "same-origin", cache: "no-store" })
         .then(function (r) {
           if (expired(r)) { window.location.reload(); return null; }

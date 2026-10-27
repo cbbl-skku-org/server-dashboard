@@ -43,8 +43,8 @@ ROUTES = [
     ("GET", r"/admin/jobs", adminviews.jobs),
     ("GET", r"/admin/job/(?P<job_id>\d+(?:_\d+)?)", adminviews.job),
     ("POST", r"/admin/job/(?P<job_id>\d+(?:_\d+)?)/action", adminviews.job_action),
-    ("GET", r"/admin/nodes", adminviews.nodes),
-    ("POST", r"/admin/node/(?P<name>[a-z][a-z0-9-]{0,31})/(?P<state>drain|resume)", adminviews.node_state),
+    ("GET", r"/admin/nodes", adminviews.home),          # the Nodes page is part of Health now: old links still work
+    ("POST", r"/admin/node/(?P<name>[a-z][a-z0-9-]{0,31})/(?P<state>drain|resume)", adminhealth.node_state),
     ("GET", r"/admin/users", adminviews.users),
     ("POST", r"/admin/users/add", adminviews.users_add),
     ("GET", r"/admin/user/(?P<name>[a-z][a-z0-9_-]{0,31})", adminviews.user),
