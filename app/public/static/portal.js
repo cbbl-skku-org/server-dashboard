@@ -44,7 +44,7 @@
     var b = e.target.closest("[data-copy]");
     if (!b) return;
     var src = document.querySelector(b.getAttribute("data-copy"));
-    var text = src ? src.textContent : "";
+    var text = !src ? "" : src.tagName === "TEXTAREA" ? src.value : src.textContent;
     var label = b.lastChild;
     function done() {
       b.classList.add("copied");
@@ -171,7 +171,8 @@
   window.addEventListener("scroll", closePop, true);   // also the timeline's sideways scroll
   window.addEventListener("resize", closePop);
 
-  // New job: live equivalent command, field checks and script preview
+  // New job: live equivalent command, field checks and script preview; a command typed into the equivalent command
+  // box fills the form (the box is not rewritten while the user is in it)
   var form = document.querySelector("form[data-preview-url]");
   if (form) {
     var cmd = document.getElementById("cmd-text");
@@ -179,6 +180,10 @@
     var scriptText = document.getElementById("script-text");
     var touched = {};
     var timer = null;
+    var cmdError = document.getElementById("cmd-error");
+    var cmdNotes = document.getElementById("cmd-notes");
+    var cmdOk = true;  // the box's text was understood (or written by the page)
+    var fit = function () { cmd.style.height = "auto"; cmd.style.height = cmd.scrollHeight + 2 + "px"; };
     // A field showing a default (RAM from the CPUs, job name from the command) keeps following it until the user
     // types a value of their own: it is "following" while it still equals the value the page last filled in.
     // An emptied field gets the default back once the user leaves it (not while they are typing a new value).
@@ -196,7 +201,7 @@
         return r.ok ? r.json() : null;
       }).then(function (d) {
         if (!d) return;
-        cmd.textContent = d.command;
+        if (document.activeElement !== cmd) { cmd.value = d.command; cmdOk = true; cmdError.textContent = ""; fit(); }
         scriptText.textContent = d.script;
         follow(form.elements.namedItem("mem"), form.elements.namedItem("mem_default"), d.mem_default);
         follow(form.elements.namedItem("name"), form.elements.namedItem("name_default"), d.name_default);
@@ -214,20 +219,63 @@
     };
     var later = function (e) {
       if (e.target.name) touched[e.target.name] = true;
+      cmdNotes.hidden = true;  // the notes were about the command, which the form now replaces
       clearTimeout(timer);
       timer = setTimeout(function () { update(false); }, 250);
     };
     form.addEventListener("input", later);
     form.addEventListener("change", later);
     var quickBox = form.querySelector("input[name=quick]");
+    var timeInput = form.elements.namedItem("time");
+    var normalTime = timeInput.value;
     if (quickBox) {  // a quick test may run at most the test maximum: switch the time limit, and back
-      var timeInput = form.elements.namedItem("time");
-      var normalTime = timeInput.value;
       quickBox.addEventListener("change", function () {
         if (quickBox.checked) { normalTime = timeInput.value; timeInput.value = quickBox.getAttribute("data-quick-time"); }
         else { timeInput.value = normalTime; }
       });
     }
+    var asked = 0;
+    var fromCommand = function () {
+      var n = ++asked;
+      var body = new URLSearchParams({ text: cmd.value, workdir: form.elements.namedItem("workdir").value });
+      fetch(cmd.getAttribute("data-from-command"), {
+        method: "POST", body: body, credentials: "same-origin", cache: "no-store"
+      }).then(function (r) {
+        if (expired(r)) { window.location.reload(); return null; }
+        return r.ok ? r.json() : null;
+      }).then(function (d) {
+        if (!d || n !== asked) return;  // a newer request is on its way
+        cmdOk = !d.error;
+        cmdError.textContent = d.error;
+        cmdNotes.textContent = "";
+        (d.notes || []).forEach(function (t) {
+          var li = document.createElement("li");
+          li.textContent = t;
+          cmdNotes.appendChild(li);
+        });
+        cmdNotes.hidden = !(d.notes || []).length;
+        if (d.error) return;
+        Object.keys(d.values).forEach(function (name) {
+          var el = form.elements.namedItem(name);
+          if (!el) return;
+          if (el.type === "checkbox") el.checked = !!d.values[name];
+          else el.value = d.values[name];
+          touched[name] = true;
+        });
+        if (!(quickBox && quickBox.checked)) normalTime = timeInput.value;
+        update(false);
+      }).catch(function () { /* the form keeps its values */ });
+    };
+    var cmdTimer = null;
+    cmd.addEventListener("input", function () {
+      fit();
+      clearTimeout(cmdTimer);
+      cmdTimer = setTimeout(function () { cmdTimer = null; fromCommand(); }, 400);
+    });
+    cmd.addEventListener("blur", function () {  // show the command as the form now has it, unless it was not understood
+      if (cmdTimer) { clearTimeout(cmdTimer); cmdTimer = null; fromCommand(); } else if (cmdOk) { update(false); }
+    });
+    fit();
     var pv = form.querySelector("[data-preview]");
     if (pv) pv.addEventListener("click", function (e) { e.preventDefault(); update(true); });
     update(false);

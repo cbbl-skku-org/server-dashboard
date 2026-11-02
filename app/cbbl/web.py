@@ -27,6 +27,7 @@ ROUTES = [
     ("GET", r"/new", views.new_job),
     ("POST", r"/new", views.new_job_post),
     ("POST", r"/new/preview", views.new_job_preview),
+    ("POST", r"/new/from-command", views.new_job_from_command),
     ("GET", r"/timeline", views.timeline),
     ("GET", r"/cluster", views.cluster),
     ("GET", r"/history", views.history),

@@ -522,8 +522,12 @@ def new_job(req, values=None, errors=None, message="", preview=None):
                    f'</div><pre class="code" id="script-text">{h(script_text)}</pre></section>')
     idle_rule = dict(slurm.IDLE_RULE, **((slurm.idle_status() or {}).get("rule") or {}))
     right = "".join([
-        card("Equivalent command", f'<pre class="code" id="cmd-text">{h(cmd_text)}</pre><button class="btn btn-sm" '
-             f'type="button" data-copy="#cmd-text">{icon("copy")}Copy</button>'),
+        card("Equivalent command", '<textarea class="code" id="cmd-text" rows="3" spellcheck="false" '
+             f'autocomplete="off" aria-describedby="cmd-hint" data-from-command="{link(req, "/new/from-command")}">'
+             f'{h(cmd_text)}</textarea>'
+             '<div class="hint" id="cmd-hint">Or type or paste an sbatch command, or a batch script: the form '
+             'follows.</div><div class="error-text" id="cmd-error"></div><ul class="cmd-notes" id="cmd-notes" hidden>'
+             f'</ul><button class="btn btn-sm" type="button" data-copy="#cmd-text">{icon("copy")}Copy</button>'),
         f'<section class="card info">{icon("info", "ic info-ic")}<div><b>Memory is enforced</b><p>A job that uses '
         "more memory than it asked for is stopped (state “Out of memory”). Each job runs only on its own CPU "
         "threads: 8 CPUs means 8 threads.</p></div></section>",
@@ -544,7 +548,8 @@ def new_job(req, values=None, errors=None, message="", preview=None):
     ])
     msg = notice("error", h(message)) if message else ""
     body = "".join([
-        head("New job", "Fill in the form, or copy the equivalent sbatch command and run it in a terminal on any node."),
+        head("New job", "Fill in the form, or copy the equivalent sbatch command and run it in a terminal on any node. "
+             "A command typed into that box fills in the form."),
         problems_notice(problems), msg,
         f'<div class="grid two-one"><div class="stack">{form}{script_card}</div><div class="stack">{right}</div></div>',
     ])
@@ -580,6 +585,16 @@ def new_job_preview(req):
         "errors": errors, "problems": problems,
         "mem_default": jobform.gb_text(spec["mem_auto_mb"]), "name_default": spec["name_derived"],
     })
+
+
+def new_job_from_command(req):
+    """The Equivalent command box, the other way round: an sbatch command or batch script -> the form's values."""
+    problems = []
+    nodes, part, envs = _form_context(req, problems)
+    values, notes, error = jobform.from_command(req.form.get("text", ""), req.home, part, nodes, envs,
+                                                workdir=jobform.expand((req.form.get("workdir") or "").strip() or
+                                                                       req.home, req.home))
+    return json_response({"values": values, "notes": notes, "error": error, "problems": problems})
 
 
 # ---------------------------------------------------------------------------------------------------- timeline

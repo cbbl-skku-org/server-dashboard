@@ -876,6 +876,87 @@ class Form(unittest.TestCase):
         self.assertIn("--wrap='echo '\"'\"'hi there'\"'\"' && python x.py'", line)
 
 
+
+class FromCommand(unittest.TestCase):
+    """The Equivalent command box the other way round: a command fills the form."""
+    nodes = slurm.nodes()
+    part = dict(slurm.partition(), debug=slurm.debug_partition())
+    envs = slurm.conda_envs(HOME)
+
+    def read(self, text, workdir=HOME):
+        return jobform.from_command(text, HOME, self.part, self.nodes, self.envs, workdir=workdir)
+
+    def test_round_trip(self):
+        """Every command the form writes reads back as the same job."""
+        forms = [dict(cpus="8", mem="32", time="2d", name="md", conda="esm", command="python run_md.py --n 3"),
+                 dict(cpus="2", mem="0.5", time="45m", node="internet", command="echo 'hi there' && pip list"),
+                 dict(cpus="4", time="10m", quick="1", node="node1", command="hostname\nsleep 5"),
+                 dict(cpus="1", time="1d", conda="base", workdir="~/blast", command="bash run_all.sh a 'b c'")]
+        for form in forms:
+            with self.subTest(form=form):
+                spec, errors = jobform.parse(dict({"workdir": HOME}, **form), HOME, self.nodes, self.part, self.envs)
+                self.assertEqual(errors, {})
+                line = jobform.command_line(spec, HOME)
+                values, notes, error = self.read(line)
+                self.assertEqual((notes, error), ([], ""))
+                again, errors = jobform.parse(dict({"workdir": HOME}, **values), HOME, self.nodes, self.part, self.envs)
+                self.assertEqual(errors, {})
+                self.assertEqual(jobform.command_line(again, HOME), line)
+
+    def test_options(self):
+        values, notes, error = self.read("sbatch -c4 --mem-per-cpu=8G -w node1 --gres=gpu:1 -o out.%j -J x "
+                                         "--time 1-12:00:00 --wrap 'echo hi'")
+        self.assertEqual({k: values[k] for k in ("cpus", "mem", "node", "name", "time", "command")},
+                         {"cpus": "4", "mem": "32", "node": "node1", "name": "x", "time": "1d 12h",
+                          "command": "echo hi"})
+        self.assertNotIn("workdir", values)        # not named: the form keeps its folder
+        self.assertIn("--gres=gpu:1 is not in the form: left out.", notes)
+        self.assertTrue(any(n.startswith("--output=out.%j is left out") for n in notes))
+        values, notes, _ = self.read("sbatch -p debug -C internet --wrap=hostname")
+        self.assertEqual((values["quick"], values["time"], values["node"], values["cpus"], values["mem"]),
+                         ("1", "10m", "internet", "1", ""))   # not named: the defaults (RAM follows the CPUs)
+        values, notes, _ = self.read("sbatch -n 8 -N 2 -p pilot --mem=0 --wrap=x")
+        self.assertEqual(len(notes), 4)
+        self.assertEqual(values["cpus"], "1")
+
+    def test_script_and_cd(self):
+        os.makedirs(HOME + "/fc", exist_ok=True)
+        with open(HOME + "/fc/run.py", "w") as f:
+            f.write("#!/usr/bin/env python3\n#SBATCH -c 16\n#SBATCH --mem=64G\nprint(1)\n#SBATCH -c 99\n")
+        values, notes, _ = self.read("cd ~/fc\nsbatch -t 90 run.py 'a b'")
+        self.assertEqual((values["cpus"], values["mem"], values["time"], values["workdir"], values["command"]),
+                         ("16", "64", "1h 30m", "~/fc", "python3 run.py 'a b'"))
+        self.assertIn("Read the #SBATCH lines of run.py.", notes)
+        values, notes, _ = self.read("sbatch -c 2 run.py", workdir=HOME + "/fc")   # relative to the form's folder
+        self.assertEqual(values["cpus"], "2")       # the command line wins over the script
+        values, notes, _ = self.read("sbatch missing.sh")
+        self.assertEqual(values["command"], "bash missing.sh")
+        self.assertTrue(notes[0].startswith("Could not open missing.sh"))
+        values, notes, _ = self.read("#!/bin/bash -l\n#SBATCH --job-name=t\n#SBATCH --cpus-per-task=3\n"
+                                     "#SBATCH --chdir=" + HOME + "/fc\n# a comment\nsource ~/miniconda3/etc/profile.d/"
+                                     "conda.sh\nconda activate esm\npython x.py\nmodule list\n")
+        self.assertEqual((values["name"], values["cpus"], values["conda"], values["workdir"], values["command"]),
+                         ("t", "3", "esm", "~/fc", "python x.py\nmodule list"))
+
+    def test_not_understood(self):
+        self.assertEqual(self.read("python train.py")[2], "Start with sbatch (or srun), or paste a batch script.")
+        self.assertEqual(self.read("sbatch --wrap='oops")[2], "A quote is not closed.")
+        self.assertEqual(self.read("  ")[2], "Type or paste an sbatch command.")
+        values, notes, _ = self.read("module load x; sbatch --wrap='conda activate nope && run'; squeue")
+        self.assertEqual(values["command"], "conda activate nope && run")
+        self.assertEqual(len(notes), 3)
+
+    def test_endpoint(self):
+        status, _, body = call("/new/from-command", "POST", {"text": "sbatch -c 3 --wrap=hostname", "workdir": "~"},
+                               ORIGIN)
+        self.assertEqual(status, 200)
+        d = json.loads(body)
+        self.assertEqual((d["values"]["cpus"], d["error"]), ("3", ""))
+        status, _, _ = call("/new/from-command", "POST", {"text": "sbatch --wrap=x"})   # not from the portal's page
+        self.assertEqual(status, 403)
+        _, _, body = call("/new")
+        self.assertIn('data-from-command="/pun/sys/cbbl/new/from-command"', body)
+
 class Helpers(unittest.TestCase):
     def test_expand_path(self):
         job = {"job_id": 1192, "array_id": 1191, "task": 3, "name": "md", "user": "u", "nodes": "node2"}

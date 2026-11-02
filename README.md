@@ -5,8 +5,8 @@ their jobs without a terminal; cluster admins get pages for every job, the nodes
 It runs as an [Open OnDemand](https://openondemand.org/) system app and replaces Open OnDemand's own pages.
 
 - **Pages for everyone:** Overview, My jobs (with a page per job: live output, CPU and memory use, cancel), New job
-  (a form that builds the batch script and shows the equivalent `sbatch` command; a Quick test box for a debug
-  partition), Timeline (All nodes: everyone's jobs per node, one colour per member, click a bar for details; My jobs:
+  (a form that builds the batch script and shows the equivalent `sbatch` command, and the other way round: a command
+  or batch script typed into that box fills in the form; a Quick test box for a debug partition), Timeline (All nodes: everyone's jobs per node, one colour per member, click a bar for details; My jobs:
   their own, with their reservations and maintenance days), Cluster status (who uses each node, running jobs ending
   soonest first, waiting jobs), Reservations (ask the admins to keep CPUs for a deadline, within per-member limits;
   cancel their own; who has priority and every reservation), History & stats (with CSV export) and Account (password,
@@ -93,7 +93,7 @@ Updating is copying `app/` again: each user's server reloads it within about 10 
 | `app/cbbl/config.py` | the settings and their defaults |
 | `app/cbbl/slurm.py` | every Slurm command and the parsing of its JSON |
 | `app/cbbl/views.py`, `layout.py` | the users' pages; the page frame and icons |
-| `app/cbbl/jobform.py` | New job: checks, batch script, equivalent command |
+| `app/cbbl/jobform.py` | New job: checks, batch script, equivalent command, and a command or batch script read back into the form |
 | `app/cbbl/account.py` | Account: SSH keys (written as the user), the account helper |
 | `app/cbbl/admin.py`, `adminviews.py`, `adminhealth.py` | who is an admin, the admin helper, the admin pages |
 | `app/cbbl/adminpriority.py`, `reservations.py` | the Priority page and the list of priority and reservations; the users' Reservations page |

@@ -168,7 +168,11 @@ input[type="checkbox"], input[type="radio"] { width: 16px; height: 16px; accent-
   font-size: 12px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: break-word;
 }
 .script-card .code { margin: 0; max-height: 420px; overflow: auto; }
-#cmd-text { white-space: pre; overflow-x: auto; }
+#cmd-text { display: block; min-height: 0; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; resize: vertical;
+  border: 1px solid var(--input-border); }
+.cmd-notes { margin: 8px 0 0; padding-left: 18px; font-size: 12px; color: var(--amber); }
+.cmd-notes li { margin: 3px 0; }
+#cmd-hint { font-size: 12px; color: var(--muted); margin: 6px 0 12px; }
 .code.script { max-height: 360px; overflow: auto; margin: 0; }
 .card.info { display: flex; gap: 12px; background: var(--info-bg); border-color: var(--info-border); }
 .card.info p { margin: 6px 0 0; }
