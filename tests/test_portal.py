@@ -253,7 +253,8 @@ class AccountAndTests(unittest.TestCase):
         self.assertIn("https://t.me/example_cluster_bot", body)
         _, _, body = call("/account/telegram", "POST", {"chat_id": "123456789", "ev_done": "1", "action": "test"}, ORIGIN)
         self.assertIn("A test message is on its way", body)
-        self.assertEqual(fakeslurm.TELEGRAM["events"], {"done": True, "failed": False, "idle": False})
+        self.assertEqual(fakeslurm.TELEGRAM["events"], {"done": True, "failed": False, "idle": False, "priority": False,
+                                                       "requests": False})
 
     def test_temporary_password_first(self):
         import cbbl.account as account
@@ -348,7 +349,7 @@ class AdminPages(unittest.TestCase):
     def test_hidden_from_other_users(self):
         fakeslurm.ADMINS.clear()
         for url in ("/admin", "/admin/jobs", "/admin/job/1300", "/admin/nodes", "/admin/users", "/admin/user/bob",
-                    "/admin/log"):
+                    "/admin/log", "/admin/priority"):
             with self.subTest(url=url):
                 status, _, body = call(url)
                 self.assertEqual(status, 404)
@@ -356,7 +357,10 @@ class AdminPages(unittest.TestCase):
         for url, form in (("/admin/job/1300/action", {"action": "cancel", "reason": "x"}),
                           ("/admin/node/node2/drain", {"reason": "x"}),
                           ("/admin/user/bob/lock", {"reason": "x", "password": fakeslurm.ADMIN_PASSWORD}),
-                          ("/admin/users/add", {"user": "x1", "password": fakeslurm.ADMIN_PASSWORD})):
+                          ("/admin/users/add", {"user": "x1", "password": fakeslurm.ADMIN_PASSWORD}),
+                          ("/admin/priority/add", {"kind": "user", "user": "bob", "level": "much", "duration": "1d",
+                                                   "reason": "x"}),
+                          ("/admin/priority/p1/end", {})):
             self.assertEqual(call(url, "POST", form, ORIGIN)[0], 404)
         self.assertEqual((fakeslurm.CANCELLED, fakeslurm.ADMIN_CALLS, fakeslurm.ADMIN_HELPER_CALLS), ([], [], []))
         self.assertNotIn("Cluster admin", call("/")[2])
@@ -553,6 +557,187 @@ class AdminPages(unittest.TestCase):
             self.assertIn(item, found)
         levels = [lv for lv, _ in found]
         self.assertEqual(levels, sorted(levels, key=lambda lv: lv != "bad"))   # the bad ones first
+
+    def test_priority_page(self):
+        saved = json.loads(json.dumps(fakeslurm.PRIORITIES))
+        try:
+            status, _, body = call("/admin/priority")
+            self.assertEqual(status, 200, body[-2000:])
+            for text in ("No priority changes are active.", "One job first", "One person first", "Reserve CPUs",
+                         '<option value="1302">1302 · carol · qc</option>', '<option value="bob">bob</option>',
+                         'href="/pun/sys/cbbl/admin/priority"'):
+                self.assertIn(text, body)
+            self.assertNotIn('<option value="1300">', body)               # running: nothing to put first
+            _, _, body = call("/admin/priority/add", "POST", {"kind": "user", "user": "bob", "level": "much",
+                                                               "duration": "date", "reason": "thesis"}, ORIGIN)
+            self.assertIn("Give the end date and time.", body)
+            self.assertEqual(fakeslurm.PRIORITIES["active"], [])
+            status, headers, _ = call("/admin/priority/add", "POST", {"kind": "user", "user": "bob", "level": "much",
+                                                                       "duration": "3d", "reason": "thesis\ndue"}, ORIGIN)
+            self.assertEqual((status, headers["Location"]), (303, "/pun/sys/cbbl/admin/priority?done=added"))
+            cmd, data = fakeslurm.ADMIN_HELPER_CALLS[-1]
+            self.assertEqual((cmd, data["user"], data["level"], data["reason"]), ("priority", "bob", "much", "thesis due"))
+            self.assertAlmostEqual(data["until"], time.time() + 3 * 86400, delta=60)
+            _, _, body = call("/admin/priority/add", "POST", {"kind": "job", "job": "1302", "level": "front",
+                                                               "duration": "permanent", "reason": "meeting"}, ORIGIN)
+            self.assertIn("Only “One person first” can be permanent", body)
+            call("/admin/priority/add", "POST", {"kind": "job", "job": "1302", "level": "front",
+                                                 "duration": "7d", "reason": "meeting"}, ORIGIN)
+            _, _, body = call("/admin/priority/add", "POST", {"kind": "reservation", "users": "bob, carol",
+                                                               "node": "node2", "cores": "", "start": "now",
+                                                               "duration": "14d", "reason": "x"}, ORIGIN)
+            self.assertIn("tick the confirmation", body)
+            self.assertIn('value="bob, carol"', body)                     # the form keeps what was typed
+            call("/admin/priority/add", "POST", {"kind": "reservation", "users": "bob", "node": "node2", "cores": "12",
+                                                 "start": "date", "start_date": "2030-01-06T09:00", "duration": "3d",
+                                                 "reason": "x"}, ORIGIN)
+            data = fakeslurm.ADMIN_HELPER_CALLS[-1][1]
+            self.assertEqual(data["until"] - data["start"], 3 * 86400)     # "for 3 days" counts from the start
+            _, _, body = call("/admin/priority?done=added")
+            for text in ("Active (3)", "Much more priority for all their jobs", "Job 1302: to the front",
+                         "Reserved: 12 CPUs of node2, from Jan 06", "thesis due", "/admin/priority/p10/end"):
+                self.assertIn(text, body)
+            self.assertEqual(body.count('<option value="permanent"'), 2)   # the person form and p10's "Change end"
+            _, _, body = call("/admin/priority/p11/extend", "POST", {"kind": "job", "duration": "permanent"}, ORIGIN)
+            self.assertIn("Only “One person first” can be permanent", body)
+            status, headers, _ = call("/admin/priority/p10/extend", "POST", {"kind": "user", "duration": "permanent"},
+                                      ORIGIN)
+            self.assertEqual(headers["Location"], "/pun/sys/cbbl/admin/priority?done=extended")
+            self.assertEqual(fakeslurm.ADMIN_HELPER_CALLS[-1], ("priority-extend", {"id": "p10", "until": None,
+                                                                                    "confirm": False}))
+            status, headers, _ = call("/admin/priority/p10/end", "POST", {}, ORIGIN)
+            self.assertEqual(headers["Location"], "/pun/sys/cbbl/admin/priority?done=ended")
+            _, _, body = call("/admin/priority")
+            self.assertIn("ended by alice: shares back to 1", body)
+            self.assertIn("There is no such priority change.", call("/admin/priority/p99/end", "POST", {}, ORIGIN)[2])
+            self.assertEqual(call("/admin/priority/x1/end", "POST", {}, ORIGIN)[0], 404)
+        finally:
+            fakeslurm.PRIORITIES.clear()
+            fakeslurm.PRIORITIES.update(saved)
+
+    def test_everyone_sees_priority_and_reservations(self):
+        path = slurm.PRIORITY_FILE
+        with open(path, "w") as f:
+            json.dump({"updated": time.time(), "active": [
+                {"id": "p1", "kind": "user", "users": ["bob"], "level": "more", "since": time.time(), "until": None},
+                {"id": "p2", "kind": "job", "users": ["carol"], "job": "1302", "level": "up", "since": time.time(),
+                 "until": time.time() + 86400}]}, f)
+        fakeslurm.ADMINS.clear()                                          # an ordinary user
+        try:
+            _, _, body = call("/cluster")
+            for text in ("Priority and reservations (4)", "More priority for all their jobs", "permanent",
+                         "Job 1302: move up", "Reserved: 12 CPUs of node2", "bob, carol",
+                         "Maintenance: no jobs on node[1-3]", "Nov 22, 12:00 AM"):
+                self.assertIn(text, body)
+            self.assertIn("Priority and reservations", call("/cluster?partial=1")[2])
+        finally:
+            os.remove(path)
+        saved = list(fakeslurm.RESERVATIONS)
+        fakeslurm.RESERVATIONS.clear()
+        try:
+            self.assertIn("Nobody has priority and no CPUs are reserved", call("/cluster")[2])
+        finally:
+            fakeslurm.RESERVATIONS[:] = saved
+
+    def test_job_page_offers_priority_for_a_waiting_job(self):
+        _, _, body = call("/admin/job/1302")
+        self.assertIn("Put job 1302 first", body)
+        self.assertIn('name="job" value="1302"', body)
+        self.assertNotIn("Put job 1300 first", call("/admin/job/1300")[2])   # running
+        self.assertNotIn("Put job 1301 first", call("/admin/job/1301")[2])   # held
+
+    def test_health_shows_priority(self):
+        from cbbl import adminhealth
+        r = json.loads(json.dumps(fakeslurm.HEALTH_REPORT))
+        r["priority"] = {"active": 2, "permanent": 1, "problems": ["p4 (bob more priority): sacctmgr failed"]}
+        self.assertIn(("warn", "Priority change not undone: p4 (bob more priority): sacctmgr failed"),
+                      adminhealth.find_problems(r, slurm.nodes(), {"updated": time.time()}, time.time()))
+        self.assertEqual(adminhealth.health_line(r), " · Priority: 2 active changes (1 permanent)")
+
+    def test_reservation_requests(self):
+        fakeslurm.REQUESTS.clear()
+        fakeslurm.ADMINS.clear()                                          # an ordinary user
+        try:
+            status, _, body = call("/reservations")
+            self.assertEqual(status, 200, body[-2000:])
+            for text in ("Ask for a reservation", "Your limit", "You have no requests", "Priority and reservations",
+                         'href="/pun/sys/cbbl/reservations"', "at most 48 CPUs"):
+                self.assertIn(text, body)
+            self.assertNotIn("Cluster admin", body)
+            _, _, body = call("/reservations/request", "POST", {"node": "node2", "cores": "", "duration": "1d",
+                                                                 "reason": "x"}, ORIGIN)
+            self.assertIn("Give the number of CPUs.", body)
+            _, _, body = call("/reservations/request", "POST", {"node": "node2", "cores": "60", "duration": "1d",
+                                                                 "reason": "x"}, ORIGIN)
+            self.assertIn("Ask for 1 to 48 CPUs.", body)
+            self.assertIn('value="60"', body)                             # the form keeps what was typed
+            status, headers, _ = call("/reservations/request", "POST", {
+                "node": "node2", "cores": "12", "others": "bob", "start": "date", "start_date": "2030-01-06T09:00",
+                "duration": "3d", "reason": "revision\nexperiments"}, ORIGIN)
+            self.assertEqual(headers["Location"], "/pun/sys/cbbl/reservations?done=request")
+            cmd, data = fakeslurm.ADMIN_HELPER_CALLS[-1]
+            self.assertEqual((cmd, data["cores"], data["reason"], data["until"] - data["start"]),
+                             ("request", 12, "revision experiments", 3 * 86400))
+            _, _, body = call("/reservations?done=request")
+            for text in ("Your request is sent", "Waiting for an admin", "12 CPUs of node2", "alice, bob",
+                         "/reservations/r1/withdraw"):
+                self.assertIn(text, body)
+            call("/reservations/request", "POST", {"node": "node1", "cores": "4", "start": "now", "duration": "1d",
+                                                   "reason": "y"}, ORIGIN)
+            self.assertEqual(fakeslurm.ADMIN_HELPER_CALLS[-1][1]["start"], "now")
+            self.assertEqual(call("/reservations/r1/withdraw", "POST", {}, ORIGIN)[1]["Location"],
+                             "/pun/sys/cbbl/reservations?done=withdraw")
+            self.assertEqual(call("/admin/priority")[0], 404)             # the admins' side stays hidden
+            self.assertEqual(call("/admin/request/r2/approve", "POST", {}, ORIGIN)[0], 404)
+            fakeslurm.ADMINS.add("alice")
+            _, _, body = call("/admin/priority")
+            for text in ("Reservation requests (1 waiting)", "4 CPUs of node1", "Fits their limit.",
+                         "/admin/request/r2/approve", "as soon as approved"):
+                self.assertIn(text, body)
+            _, headers, _ = call("/admin/request/r2/approve", "POST", {"cores": "2", "note": "half for now"}, ORIGIN)
+            self.assertEqual(headers["Location"], "/pun/sys/cbbl/admin/priority?done=approve")
+            self.assertEqual(fakeslurm.ADMIN_HELPER_CALLS[-1], ("request-approve", {"id": "r2", "note": "half for now",
+                                                                                    "cores": "2"}))
+            _, _, body = call("/reservations")
+            self.assertIn("/reservations/r2/cancel", body)                # the requester may cancel it
+            self.assertIn("half for now", body)
+            self.assertEqual(call("/reservations/r2/cancel", "POST", {}, ORIGIN)[1]["Location"],
+                             "/pun/sys/cbbl/reservations?done=cancel")
+            self.assertIn("Cluster admins: a member asks for a reservation", call("/account")[2])
+            fakeslurm.ADMINS.clear()
+            self.assertNotIn("Cluster admins: a member asks", call("/account")[2])
+        finally:
+            fakeslurm.REQUESTS.clear()
+            fakeslurm.ADMINS.clear()
+            fakeslurm.ADMINS.add("alice")
+
+    def test_timeline_shows_reservations(self):
+        def at(t):
+            return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(t))
+        now = time.time()
+        saved = list(fakeslurm.RESERVATIONS)
+        fakeslurm.RESERVATIONS[:] = [
+            f"ReservationName=prio-alice-p7 StartTime={at(now + 3600)} EndTime={at(now + 2 * 86400)} Nodes=node3 "
+            "CoreCnt=16 Flags=MAGNETIC,IGNORE_JOBS Users=alice,bob State=INACTIVE",
+            f"ReservationName=prio-carol-p8 StartTime={at(now + 3600)} EndTime={at(now + 86400)} Nodes=node2 "
+            "CoreCnt=8 Flags=MAGNETIC,IGNORE_JOBS Users=carol State=INACTIVE",                 # not theirs
+            f"ReservationName=maint-x StartTime={at(now + 20 * 86400)} EndTime={at(now + 21 * 86400)} "
+            "Nodes=node[1-3] CoreCnt=144 Flags=MAINT,SPEC_NODES Users=root State=INACTIVE"]   # far ahead
+        fakeslurm.REQUESTS[:] = [{"id": "r1", "user": "alice", "users": ["alice"], "node": "node2", "cores": 24,
+                                  "start": now, "until": now + 86400, "length": 86400, "reason": "x", "at": now,
+                                  "state": "pending"}]
+        try:
+            status, _, body = call("/timeline")
+            self.assertEqual(status, 200, body[-2000:])
+            for text in ('class="tl-band b-res"', "Your reservation: 16 CPUs of node3",
+                         'class="tl-band b-req"', "Requested: 24 CPUs of node2 (waiting for an admin)",
+                         "Coming up: Maintenance: no jobs on node[1-3]", 'href="/pun/sys/cbbl/reservations"'):
+                self.assertIn(text, body)
+            self.assertNotIn("8 CPUs of node2", body)                  # other people's reservations stay off
+            self.assertNotIn('class="tl-band b-maint"', body)            # 20 days ahead: listed, not drawn
+        finally:
+            fakeslurm.RESERVATIONS[:] = saved
+            fakeslurm.REQUESTS.clear()
 
     def test_hostnames(self):
         self.assertEqual(slurm.hostnames("cn[01,200]"), ["cn01", "cn200"])

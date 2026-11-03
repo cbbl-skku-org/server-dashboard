@@ -113,7 +113,22 @@ PARTITION = {"name": "cpu", "defaults": {"time": num(1440), "partition_memory_pe
 DEBUG = {"name": "debug", "defaults": {"time": num(10), "partition_memory_per_cpu": num(4096)},
          "maximums": {"time": num(10), "cpus_per_node": num(4), "partition_memory_per_node": num(16384)}}
 HELPER_CALLS = []          # (command, input) given to the account helper
-TELEGRAM = {"chat_id": "", "events": {"done": False, "failed": True, "idle": True}}
+TELEGRAM = {"chat_id": "", "events": {"done": False, "failed": True, "idle": True, "priority": False}}
+# scontrol -o show reservation (a Priority page reservation and the maintenance one)
+RESERVATIONS = [
+    "ReservationName=prio-bob-p3 StartTime=2026-11-02T09:00:00 EndTime=2026-11-05T09:00:00 Duration=3-00:00:00 "
+    "Nodes=node2 NodeCnt=1 CoreCnt=12 Features=(null) PartitionName=(null) Flags=MAGNETIC,IGNORE_JOBS TRES=cpu=24 "
+    "Users=bob,carol Groups=(null) Accounts=(null) Licenses=(null) State=INACTIVE BurstBuffer=(null) MaxStartDelay=(null)",
+    "ReservationName=maint-20261122 StartTime=2026-11-22T00:00:00 EndTime=2026-11-23T00:00:00 Duration=1-00:00:00 "
+    "Nodes=node[1-3] NodeCnt=3 CoreCnt=144 Features=(null) PartitionName=(null) Flags=MAINT,SPEC_NODES "
+    "TRES=cpu=288 Users=root Groups=(null) Accounts=(null) Licenses=(null) State=INACTIVE BurstBuffer=(null) "
+    "MaxStartDelay=(null)",
+]
+# the admin helper's ledger of Priority page changes (its "priorities" command)
+PRIORITIES = {"active": [], "ended": []}
+# users' reservation requests (the admin helper's "requests" and "requests-mine")
+REQUESTS = []
+LIMITS = {"cpus": 48, "days": 7, "ahead": 30, "budget": 336}
 
 
 def find_active(jid):
@@ -168,6 +183,8 @@ def fake_run(args, input_text=None, timeout=None):
         else:
             node.update(state=[node["state"][0]], reason="", reason_set_by_user="")
         return ""
+    if cmd == "scontrol" and args[1:] == ["-o", "show", "reservation"]:
+        return "\n".join(RESERVATIONS) + "\n" if RESERVATIONS else "No reservations in the system\n"
     if cmd == "scontrol" and args[1] in ("hold", "release", "requeue"):
         ADMIN_CALLS.append(args[1:])
         return ""
@@ -319,6 +336,56 @@ def fake_admin_helper(cmd, data=None, timeout=None):
                                          "text": "cancel job 1300 user=bob reason='test <b>'"}]}
     if cmd == "note":
         return {"ok": True}
+    if cmd == "priorities":
+        return dict(PRIORITIES, ok=True)
+    if cmd == "requests-mine":
+        mine = [r for r in REQUESTS if r["user"] == USER]
+        held = [r for r in mine if r["state"] == "approved"]
+        return {"ok": True, "requests": mine, "limits": LIMITS,
+                "used": {"peak": sum(r["cores"] for r in held),
+                         "cpu_days": sum(r["cores"] * (r["until"] - r["start"]) / 86400 for r in held)}}
+    if cmd == "request":
+        if data["cores"] > 48:
+            return {"ok": False, "error": "Ask for 1 to 48 CPUs."}
+        r = {"id": f"r{len(REQUESTS) + 1}", "user": USER, "users": sorted({USER} | set(data["others"].replace(",", " ")
+                                                                                         .split())),
+             "node": data["node"], "cores": data["cores"], "start": NOW if data["start"] == "now" else data["start"],
+             "until": data["until"], "reason": data["reason"], "at": NOW, "state": "pending"}
+        if data["start"] == "now":
+            r["length"] = data["until"] - NOW
+        REQUESTS.append(r)
+        return {"ok": True, "request": r}
+    if cmd in ("request-withdraw", "request-cancel", "request-approve", "request-decline"):
+        r = next((r for r in REQUESTS if r["id"] == data["id"]), None)
+        want = "approved" if cmd == "request-cancel" else "pending"
+        if r is None or r["state"] != want:
+            return {"ok": False, "error": f"This request is not {want}."}
+        r["state"] = {"request-withdraw": "withdrawn", "request-cancel": "ended", "request-approve": "approved",
+                      "request-decline": "declined"}[cmd]
+        r.update(note=data.get("note", ""), cores=int(data.get("cores") or r["cores"]))
+        return {"ok": True, "request": r}
+    if cmd == "requests":
+        return {"ok": True, "pending": [dict(r, problem=None) for r in REQUESTS if r["state"] == "pending"],
+                "decided": [r for r in REQUESTS if r["state"] != "pending"]}
+    if cmd == "priority":
+        if data["kind"] == "reservation" and not data["confirm"] and not data["cores"]:
+            return {"ok": False, "error": "A whole node for more than 14 days keeps it from everyone "
+                                          "else: tick the confirmation to go ahead."}
+        b = dict(data, id=f"p{len(PRIORITIES['active']) + 10}", since=NOW, by=USER,
+                 users=[data["user"]] if data["kind"] == "user" else ["carol"] if data["kind"] == "job" else
+                 data["users"].replace(",", " ").split())
+        PRIORITIES["active"].append(b)
+        return {"ok": True, "priority": b}
+    if cmd in ("priority-end", "priority-extend"):
+        b = next((b for b in PRIORITIES["active"] if b["id"] == data["id"]), None)
+        if b is None:
+            return {"ok": False, "error": "There is no such priority change."}
+        if cmd == "priority-extend":
+            b["until"] = data["until"]
+        else:
+            PRIORITIES["active"].remove(b)
+            PRIORITIES["ended"].insert(0, dict(b, ended=NOW, end_note=f"ended by {USER}: shares back to 1"))
+        return {"ok": True, "priority": b}
     if data.get("password") != ADMIN_PASSWORD:
         return {"ok": False, "error": "Your password is wrong."}
     if cmd == "add-user":
@@ -351,4 +418,5 @@ def install(home):
     ACTIVE[:] = _rehome(ACTIVE, home)
     FINISHED[:] = _rehome(FINISHED, home)
     slurm.run = fake_run
+    slurm.PRIORITY_FILE = os.path.join(os.path.dirname(home), "priority-active.json")
     slurm.me = lambda: FakePw(home)

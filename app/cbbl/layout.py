@@ -14,6 +14,7 @@ NAV = [
     ("new", "New job", "/new", "plus"),
     ("timeline", "My timeline", "/timeline", "calendar"),
     ("cluster", "Cluster status", "/cluster", "cpu"),
+    ("reservations", "Reservations", "/reservations", "lock"),
     ("tests", "Test runs", "/tests", "flask"),
     ("history", "History & stats", "/history", "history"),
     ("account", "Account", "/account", "user"),
@@ -23,6 +24,7 @@ ADMIN_NAV = [
     ("admin-health", "Health", "/admin/health", "pulse"),
     ("admin-jobs", "All jobs", "/admin/jobs", "layers"),
     ("admin-users", "Users", "/admin/users", "users"),
+    ("admin-priority", "Priority", "/admin/priority", "star"),
     ("admin-log", "Admin log", "/admin/log", "file"),
 ]
 
@@ -80,6 +82,9 @@ _ICONS = {
     "pause": '<rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/>',
     "play": '<polygon points="6 3 20 12 6 21 6 3"/>',
     "lock": '<rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+    "star": '<path d="M11.52 2.3a.53.53 0 0 1 .96 0l2.31 4.68a2.12 2.12 0 0 0 1.6 1.16l5.16.76a.53.53 0 0 1 .3.9l-3.74 '
+            '3.64a2.12 2.12 0 0 0-.61 1.88l.88 5.14a.53.53 0 0 1-.77.56l-4.62-2.43a2.12 2.12 0 0 0-1.97 0L6.4 21.01a.53.53 0 '
+            '0 1-.77-.56l.88-5.14a2.12 2.12 0 0 0-.61-1.88L2.16 9.8a.53.53 0 0 1 .3-.9l5.16-.76a2.12 2.12 0 0 0 1.6-1.16z"/>',
     "key": '<path d="m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4"/><path d="m21 2-9.6 9.6"/>'
            '<circle cx="7.5" cy="15.5" r="5.5"/>',
 }

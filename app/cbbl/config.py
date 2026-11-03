@@ -36,6 +36,9 @@ DEFAULTS = {
     "idle_status": "/var/lib/portal-idle-jobs/status.json",
     "idle_rule": {"cpu_threshold": 0.05, "idle_minutes": 60, "warn_minutes": 45, "min_cpus": 1},
     "idle_note_prefix": "Idle check",               # the idle check's note on the jobs it cancels starts with this
+    # the admins' Priority page and members' reservation requests (the admin helper keeps and enforces them)
+    "priority_file": "/var/lib/portal-priority/active.json",   # the active changes, written by the admin helper (0644)
+    "reservation_limits": {"cpus": 48, "days": 7, "ahead": 30, "budget": 48 * 7},   # per request / per member (CPU-days)
     # the admins' Health page
     "health": {
         "disk_warn": 90, "disk_bad": 95,             # % used, as df counts it
@@ -46,7 +49,8 @@ DEFAULTS = {
         # timer: [name on the page, schedule, a last run older than this many seconds is a problem]
         "timers": {"idle-jobs": ["Idle-job check", "every 5 minutes", 15 * 60],
                    "notify": ["Telegram notifier", "every minute", 5 * 60],
-                   "home-backup": ["Home backup", "nightly", 30 * 3600]},
+                   "home-backup": ["Home backup", "nightly", 30 * 3600],
+                   "priority": ["Priority ends (Priority page)", "every 5 minutes", 15 * 60]},
         # [node, log key in the helper's report, title]
         "logs": [["node1", "idle-jobs", "Idle-job check"], ["node1", "notify", "Telegram notifier"],
                  ["node2", "home-backup", "Home backup"]],
@@ -56,7 +60,7 @@ DEFAULTS = {
         "controller_note": "",                       # e.g. where the known slurmctld warnings are explained
     },
 }
-NESTED = ("idle_rule", "health")
+NESTED = ("idle_rule", "health", "reservation_limits")
 
 
 def load(path=PATH):

@@ -7,7 +7,7 @@ import time
 import traceback
 import urllib.parse
 
-from . import account, admin, adminhealth, adminviews, config, slurm, views
+from . import account, admin, adminhealth, adminpriority, adminviews, config, reservations, slurm, views
 from .layout import head, page
 from .response import Response, json_response
 from .util import h
@@ -37,6 +37,9 @@ ROUTES = [
     ("POST", r"/account/password", views.account_password),
     ("POST", r"/account/keys", views.account_keys),
     ("POST", r"/account/telegram", views.account_telegram),
+    ("GET", r"/reservations", reservations.reservations),
+    ("POST", r"/reservations/request", reservations.request_post),
+    ("POST", r"/reservations/(?P<rid>r\d{1,9})/(?P<change>withdraw|cancel)", reservations.request_change),
     # cluster admins only (the others get "not found")
     ("GET", r"/admin", adminviews.home),
     ("GET", r"/admin/health", adminhealth.health),
@@ -50,6 +53,10 @@ ROUTES = [
     ("GET", r"/admin/user/(?P<name>[a-z][a-z0-9_-]{0,31})", adminviews.user),
     ("POST", r"/admin/user/(?P<name>[a-z][a-z0-9_-]{0,31})/(?P<change>password|lock|unlock)",
      adminviews.user_change),
+    ("GET", r"/admin/priority", adminpriority.priority),
+    ("POST", r"/admin/priority/add", adminpriority.priority_add),
+    ("POST", r"/admin/priority/(?P<bid>p\d{1,9})/(?P<change>end|extend)", adminpriority.priority_change),
+    ("POST", r"/admin/request/(?P<rid>r\d{1,9})/(?P<change>approve|decline)", adminpriority.request_change),
     ("GET", r"/admin/log", adminviews.log),
 ]
 ROUTES = [(m, re.compile(p + r"/?\Z"), fn) for m, p, fn in ROUTES]

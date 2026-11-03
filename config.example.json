@@ -37,6 +37,13 @@
     "min_cpus": 1
   },
   "idle_note_prefix": "Idle check",
+  "priority_file": "/var/lib/portal-priority/active.json",
+  "reservation_limits": {
+    "cpus": 48,
+    "days": 7,
+    "ahead": 30,
+    "budget": 336
+  },
   "health": {
     "disk_warn": 90,
     "disk_bad": 95,
@@ -61,6 +68,11 @@
         "Home backup",
         "nightly",
         108000
+      ],
+      "priority": [
+        "Priority ends (Priority page)",
+        "every 5 minutes",
+        900
       ]
     },
     "logs": [

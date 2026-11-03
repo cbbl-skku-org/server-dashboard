@@ -5,12 +5,15 @@ their jobs without a terminal; cluster admins get pages for every job, the nodes
 It runs as an [Open OnDemand](https://openondemand.org/) system app and replaces Open OnDemand's own pages.
 
 - **Pages for everyone:** Overview, My jobs (with a page per job: live output, CPU and memory use, cancel), New job
-  (a form that builds the batch script and shows the equivalent `sbatch` command), My timeline, Cluster status,
-  Test runs (quick jobs in a debug partition), History & stats (with CSV export) and Account (password, SSH keys,
-  Telegram notifications).
+  (a form that builds the batch script and shows the equivalent `sbatch` command), My timeline (with their
+  reservations and maintenance days), Cluster status (also who has priority and every reservation), Reservations
+  (ask the admins to keep CPUs for a deadline, within per-member limits; cancel their own), Test runs (quick jobs in a
+  debug partition), History & stats (with CSV export) and Account (password, SSH keys, Telegram notifications).
 - **Pages for cluster admins** (members of one Unix group): Health (routine checks of every node, with each
   node's Slurm state and drain/resume), All jobs (cancel, hold, release, requeue with a note the user sees), Users
-  (add, reset password, lock, unlock) and Admin log. Everyone else gets "not found".
+  (add, reset password, lock, unlock), Priority (put a waiting job or a member first, reserve CPUs, each for a while
+  or a member also permanently; approve or decline members' reservation requests) and Admin log. Everyone else gets
+  "not found".
 - **Python 3.9+, standard library only.** No database, no build step, no JavaScript framework: pages are rendered on
   the server and work without JavaScript; `portal.js` only adds live refresh and small helpers.
 
@@ -56,10 +59,13 @@ browser ──HTTPS──▶ Apache (Open OnDemand front end)
   Slurm is read through its commands' JSON output (`--json`; tested with Slurm 26.05).
 - Two things need root, and go through `sudo` to small helper programs (not part of this repository): the account
   helper (password on every node, Telegram settings) and the admin helper (accounts, the health report, the admin
-  log). Each gets one command as its argument and JSON on stdin, and prints a JSON object as its last line of output.
+  log, priority changes and reservation requests; a root timer of yours should undo expired priority changes).
+  Every user may run the admin helper's four request commands (`request`, `request-withdraw`, `request-cancel`,
+  `requests-mine`) for their own requests; the rest is for the admin group. Each gets one command as its argument and JSON on stdin, and prints a JSON object as its last line of output.
   The commands and answers the portal expects are in `fake_helper` and `fake_admin_helper` in `tests/fakeslurm.py`.
   Admin actions on jobs and nodes need the admin's Slurm `adminlevel=Administrator`.
-- Optional inputs: the idle-job check's status file (`idle_status`) and a notifier's bot name (`bot_file`).
+- Optional inputs: the idle-job check's status file (`idle_status`), a notifier's bot name (`bot_file`) and the admin
+  helper's list of active priority changes (`priority_file`, readable by all).
   Without them the related parts of the pages are simply missing.
 - Forms are accepted only from the portal's own pages (`Origin` check; the session cookie should be `SameSite=Lax`).
 
@@ -72,8 +78,8 @@ browser ──HTTPS──▶ Apache (Open OnDemand front end)
    which describe an example cluster (node1, node2, node3).
 3. In Open OnDemand's `ood_portal.yml`, send `/` to the app, protect `/pun` with your sign-in, and block Open
    OnDemand's own dashboard if you want this portal to be the only one.
-4. For the Account and admin pages: install your helpers and allow them in sudoers (users: the account helper;
-   the admin group: the admin helper).
+4. For the Account and admin pages: install your helpers and allow them in sudoers (users: the account helper and
+   the admin helper's request commands; the admin group: the admin helper).
 
 Updating is copying `app/` again: each user's server reloads it within about 10 seconds.
 
@@ -88,6 +94,7 @@ Updating is copying `app/` again: each user's server reloads it within about 10 
 | `app/cbbl/jobform.py` | New job: checks, batch script, equivalent command |
 | `app/cbbl/account.py` | Account: SSH keys (written as the user), the account helper |
 | `app/cbbl/admin.py`, `adminviews.py`, `adminhealth.py` | who is an admin, the admin helper, the admin pages |
+| `app/cbbl/adminpriority.py`, `reservations.py` | the Priority page and Cluster status's list; the users' Reservations page |
 | `app/public/static/` | CSS, JavaScript, icon |
 | `login/login.html` | the sign-in page (static, served by Apache) |
 

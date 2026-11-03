@@ -179,6 +179,11 @@ def job(req, job_id, message=""):
                 f'<div class="form-actions">{btns}</div></form>')
     else:
         form = '<p class="muted">The job has ended: there is nothing to do.</p>'
+    if j["state"] == "PENDING" and not held(j):
+        from .adminpriority import job_form   # adminpriority imports this module
+        form += ('<div class="section-title spaced">Put it first</div><p class="muted small">For a deadline: the job '
+                 "starts before other waiting jobs. Listed on the Priority page and on everyone's Cluster status.</p>"
+                 + job_form(req, j["id"]))
     script = slurm.job_script(j)
     details = job_details(j) + ('<p class="muted small after">The output files stay private to the user: their '
                                 "home is not readable by others.</p>")
