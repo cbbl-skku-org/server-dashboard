@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.join(HERE, "..", "app"))
 sys.path.insert(0, HERE)
 
 import fakeslurm  # noqa: E402
-from cbbl import jobform, slurm, util, web  # noqa: E402
+from cbbl import adminhealth, jobform, slurm, util, web  # noqa: E402
 
 TMP = tempfile.mkdtemp(prefix="cbbl-portal-test-")
 atexit.register(shutil.rmtree, TMP, ignore_errors=True)
@@ -251,7 +251,7 @@ class AccountAndTests(unittest.TestCase):
         _, _, body = call("/account/telegram", "POST", {"chat_id": "123456789", "ev_done": "1", "action": "test"}, ORIGIN)
         self.assertIn("A test message is on its way", body)
         self.assertEqual(fakeslurm.TELEGRAM["events"], {"done": True, "failed": False, "idle": False, "priority": False,
-                                                       "requests": False})
+                                                       "requests": False, "disks": False})
 
     def test_temporary_password_first(self):
         import cbbl.account as account
@@ -518,6 +518,49 @@ class AdminPages(unittest.TestCase):
             fakeslurm.ADMINS.clear()
             self.assertEqual(call("/admin/health")[0], 404)
         finally:
+            fakeslurm.HEALTH_REPORT.clear()
+            fakeslurm.HEALTH_REPORT.update(report)
+            os.remove(slurm.IDLE_STATUS)
+            slurm.IDLE_STATUS = idle_path
+
+    def test_health_disks(self):
+        idle_path, slurm.IDLE_STATUS = slurm.IDLE_STATUS, os.path.join(TMP, "idle-disks.json")
+        report = json.loads(json.dumps(fakeslurm.HEALTH_REPORT))
+        try:
+            with open(slurm.IDLE_STATUS, "w") as f:
+                json.dump({"updated": time.time(), "idle": {}, "cancelled": {}}, f)
+            body = call("/admin/health")[2]
+            for text in ("Disk health", "slot 251:15", "hot spare", "idle spare: no readings", "15 % worn",
+                         "about 4.4 years left", "Samsung SSD 970 EVO Plus 1TB", "WDC WUH722020BL5204",
+                         "RAID 6 array of 15 disks + 1 hot spare, 236.469 TB", ">Optimal</span>", "every 6 hours", ">20 TB<", ">1 TB<",
+                         "system disk</div>", "hot spare</div>", '<th title="The disk&#x27;s own power-on time'):
+                self.assertIn(text, body)
+            self.assertNotIn("Disk:", body)                                       # no disk problems today
+            self.assertNotIn("disk-legend", body)                                 # the explanations: tooltips only
+            disks = fakeslurm.HEALTH_REPORT["disks"]
+            disks["problems"] = [{"level": "bad", "key": "node3:array:0/239",
+                                  "text": "node3: the RAID6 array 0/239 is degraded (a disk is missing: replace it)"},
+                                 {"level": "warn", "key": "node2:SERIAL04:defects",
+                                  "text": "node2 slot 31:2 (SEAGATE ST22000NM000E): 3 remapped sectors"}]
+            disks["nodes"]["node3"]["arrays"][0]["state"] = "Dgrd"
+            body = call("/admin/health")[2]
+            self.assertIn("Needs attention", body)
+            self.assertIn("Disk: node3: the RAID6 array 0/239 is degraded", body)
+            self.assertIn("Disk: node2 slot 31:2 (SEAGATE ST22000NM000E): 3 remapped sectors", body)
+            self.assertIn(">Degraded</span>", body)
+            self.assertIn(">check</span>", body)                                   # the disk's own row
+            disks["at"] = time.time() - 20 * 3600
+            self.assertIn("The disk check last ran 20h", call("/admin/health")[2])
+            del fakeslurm.HEALTH_REPORT["disks"]
+            body = call("/admin/health")[2]                                      # disk_check off (the default)
+            self.assertNotIn("Disk health", body)
+            self.assertNotIn("disk check", body)
+            adminhealth.DISK_CHECK = True                                         # a site that runs one
+            body = call("/admin/health")[2]
+            self.assertIn("The disk check has no report yet", body)
+            self.assertIn("No report from the disk check yet", body)
+        finally:
+            adminhealth.DISK_CHECK = False
             fakeslurm.HEALTH_REPORT.clear()
             fakeslurm.HEALTH_REPORT.update(report)
             os.remove(slurm.IDLE_STATUS)
@@ -875,6 +918,87 @@ class Form(unittest.TestCase):
         self.assertIn("-J it_s", line)
         self.assertIn("--wrap='echo '\"'\"'hi there'\"'\"' && python x.py'", line)
 
+
+
+class FromCommand(unittest.TestCase):
+    """The Equivalent command box the other way round: a command fills the form."""
+    nodes = slurm.nodes()
+    part = dict(slurm.partition(), debug=slurm.debug_partition())
+    envs = slurm.conda_envs(HOME)
+
+    def read(self, text, workdir=HOME):
+        return jobform.from_command(text, HOME, self.part, self.nodes, self.envs, workdir=workdir)
+
+    def test_round_trip(self):
+        """Every command the form writes reads back as the same job."""
+        forms = [dict(cpus="8", mem="32", time="2d", name="md", conda="esm", command="python run_md.py --n 3"),
+                 dict(cpus="2", mem="0.5", time="45m", node="internet", command="echo 'hi there' && pip list"),
+                 dict(cpus="4", time="10m", quick="1", node="node1", command="hostname\nsleep 5"),
+                 dict(cpus="1", time="1d", conda="base", workdir="~/blast", command="bash run_all.sh a 'b c'")]
+        for form in forms:
+            with self.subTest(form=form):
+                spec, errors = jobform.parse(dict({"workdir": HOME}, **form), HOME, self.nodes, self.part, self.envs)
+                self.assertEqual(errors, {})
+                line = jobform.command_line(spec, HOME)
+                values, notes, error = self.read(line)
+                self.assertEqual((notes, error), ([], ""))
+                again, errors = jobform.parse(dict({"workdir": HOME}, **values), HOME, self.nodes, self.part, self.envs)
+                self.assertEqual(errors, {})
+                self.assertEqual(jobform.command_line(again, HOME), line)
+
+    def test_options(self):
+        values, notes, error = self.read("sbatch -c4 --mem-per-cpu=8G -w node1 --gres=gpu:1 -o out.%j -J x "
+                                         "--time 1-12:00:00 --wrap 'echo hi'")
+        self.assertEqual({k: values[k] for k in ("cpus", "mem", "node", "name", "time", "command")},
+                         {"cpus": "4", "mem": "32", "node": "node1", "name": "x", "time": "1d 12h",
+                          "command": "echo hi"})
+        self.assertNotIn("workdir", values)        # not named: the form keeps its folder
+        self.assertIn("--gres=gpu:1 is not in the form: left out.", notes)
+        self.assertTrue(any(n.startswith("--output=out.%j is left out") for n in notes))
+        values, notes, _ = self.read("sbatch -p debug -C internet --wrap=hostname")
+        self.assertEqual((values["quick"], values["time"], values["node"], values["cpus"], values["mem"]),
+                         ("1", "10m", "internet", "1", ""))   # not named: the defaults (RAM follows the CPUs)
+        values, notes, _ = self.read("sbatch -n 8 -N 2 -p pilot --mem=0 --wrap=x")
+        self.assertEqual(len(notes), 4)
+        self.assertEqual(values["cpus"], "1")
+
+    def test_script_and_cd(self):
+        os.makedirs(HOME + "/fc", exist_ok=True)
+        with open(HOME + "/fc/run.py", "w") as f:
+            f.write("#!/usr/bin/env python3\n#SBATCH -c 16\n#SBATCH --mem=64G\nprint(1)\n#SBATCH -c 99\n")
+        values, notes, _ = self.read("cd ~/fc\nsbatch -t 90 run.py 'a b'")
+        self.assertEqual((values["cpus"], values["mem"], values["time"], values["workdir"], values["command"]),
+                         ("16", "64", "1h 30m", "~/fc", "python3 run.py 'a b'"))
+        self.assertIn("Read the #SBATCH lines of run.py.", notes)
+        values, notes, _ = self.read("sbatch -c 2 run.py", workdir=HOME + "/fc")   # relative to the form's folder
+        self.assertEqual(values["cpus"], "2")       # the command line wins over the script
+        values, notes, _ = self.read("sbatch missing.sh")
+        self.assertEqual(values["command"], "bash missing.sh")
+        self.assertTrue(notes[0].startswith("Could not open missing.sh"))
+        values, notes, _ = self.read("#!/bin/bash -l\n#SBATCH --job-name=t\n#SBATCH --cpus-per-task=3\n"
+                                     "#SBATCH --chdir=" + HOME + "/fc\n# a comment\nsource ~/miniconda3/etc/profile.d/"
+                                     "conda.sh\nconda activate esm\npython x.py\nmodule list\n")
+        self.assertEqual((values["name"], values["cpus"], values["conda"], values["workdir"], values["command"]),
+                         ("t", "3", "esm", "~/fc", "python x.py\nmodule list"))
+
+    def test_not_understood(self):
+        self.assertEqual(self.read("python train.py")[2], "Start with sbatch (or srun), or paste a batch script.")
+        self.assertEqual(self.read("sbatch --wrap='oops")[2], "A quote is not closed.")
+        self.assertEqual(self.read("  ")[2], "Type or paste an sbatch command.")
+        values, notes, _ = self.read("module load x; sbatch --wrap='conda activate nope && run'; squeue")
+        self.assertEqual(values["command"], "conda activate nope && run")
+        self.assertEqual(len(notes), 3)
+
+    def test_endpoint(self):
+        status, _, body = call("/new/from-command", "POST", {"text": "sbatch -c 3 --wrap=hostname", "workdir": "~"},
+                               ORIGIN)
+        self.assertEqual(status, 200)
+        d = json.loads(body)
+        self.assertEqual((d["values"]["cpus"], d["error"]), ("3", ""))
+        status, _, _ = call("/new/from-command", "POST", {"text": "sbatch --wrap=x"})   # not from the portal's page
+        self.assertEqual(status, 403)
+        _, _, body = call("/new")
+        self.assertIn('data-from-command="/pun/sys/cbbl/new/from-command"', body)
 
 class Helpers(unittest.TestCase):
     def test_expand_path(self):

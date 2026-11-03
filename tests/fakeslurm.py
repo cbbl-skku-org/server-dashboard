@@ -333,6 +333,12 @@ HEALTH_REPORT = {"ok": True, "at": NOW, "nodes": {
 }}
 
 
+# the disk check's report in the health answer ("disks"; a real one of 2026-11-03 with the serial numbers replaced),
+# 2 hours old: every disk with its SMART data and its state in the RAID array, the arrays, the problems found
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "disk-report.json")) as _f:
+    HEALTH_REPORT["disks"] = dict(json.load(_f), at=NOW - 2 * H)
+
+
 def fake_admin_helper(cmd, data=None, timeout=None):
     ADMIN_HELPER_CALLS.append((cmd, data))
     if cmd == "health":
