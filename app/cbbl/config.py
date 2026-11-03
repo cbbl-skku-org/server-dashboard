@@ -45,6 +45,10 @@ DEFAULTS = {
         "clock_warn": 1.0, "clock_bad": 60.0,        # seconds; munge refuses beyond 5 minutes
         "mem_warn": 0.10,                            # free memory below 10 %
         "idle_stale": 15 * 60,                       # the idle check writes its status every 5 minutes
+        # the disk check (SMART and RAID state of every disk; a root job of your own, read through the admin helper's
+        # health answer, field "disks": format in tests/fakeslurm.py). Off: no card and no warning without a report
+        "disk_check": False,
+        "disks_stale": 13 * 3600,                    # a report older than this is a problem (ours runs every 6 hours)
         "backup_max_age": 30 * 3600, "backup_long_run": 26 * 3600,
         # timer: [name on the page, schedule, a last run older than this many seconds is a problem]
         "timers": {"idle-jobs": ["Idle-job check", "every 5 minutes", 15 * 60],
