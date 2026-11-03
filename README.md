@@ -5,12 +5,14 @@ their jobs without a terminal; cluster admins get pages for every job, the nodes
 It runs as an [Open OnDemand](https://openondemand.org/) system app and replaces Open OnDemand's own pages.
 
 - **Pages for everyone:** Overview, My jobs (with a page per job: live output, CPU and memory use, cancel), New job
-  (a form that builds the batch script and shows the equivalent `sbatch` command), My timeline (with their
-  reservations and maintenance days), Cluster status (also who has priority and every reservation), Reservations
-  (ask the admins to keep CPUs for a deadline, within per-member limits; cancel their own), Test runs (quick jobs in a
-  debug partition), History & stats (with CSV export) and Account (password, SSH keys, Telegram notifications).
+  (a form that builds the batch script and shows the equivalent `sbatch` command, and the other way round: a command
+  or batch script typed into that box fills in the form; a Quick test box for a debug partition), Timeline (All nodes: everyone's jobs per node, one colour per member, click a bar for details; My jobs:
+  their own, with their reservations and maintenance days), Cluster status (who uses each node, running jobs ending
+  soonest first, waiting jobs), Reservations (ask the admins to keep CPUs for a deadline, within per-member limits;
+  cancel their own; who has priority and every reservation), History & stats (with CSV export) and Account (password,
+  SSH keys, Telegram notifications).
 - **Pages for cluster admins** (members of one Unix group): Health (routine checks of every node, with each
-  node's Slurm state and drain/resume), All jobs (cancel, hold, release, requeue with a note the user sees), Users
+  node's Slurm state and drain/resume; optionally every disk's health: SSD wear, array disks' errors and states), All jobs (cancel, hold, release, requeue with a note the user sees), Users
   (add, reset password, lock, unlock), Priority (put a waiting job or a member first, reserve CPUs, each for a while
   or a member also permanently; approve or decline members' reservation requests) and Admin log. Everyone else gets
   "not found".
@@ -60,6 +62,9 @@ browser ──HTTPS──▶ Apache (Open OnDemand front end)
 - Two things need root, and go through `sudo` to small helper programs (not part of this repository): the account
   helper (password on every node, Telegram settings) and the admin helper (accounts, the health report, the admin
   log, priority changes and reservation requests; a root timer of yours should undo expired priority changes).
+  For the Health page's "Disk health" card, the health answer may carry a disk check's report (`"disks"`; a root job
+  of yours reading smartctl and the RAID tool; format: `tests/data/disk-report.json`) and `health.disk_check` is set
+  to `true` in the config.
   Every user may run the admin helper's four request commands (`request`, `request-withdraw`, `request-cancel`,
   `requests-mine`) for their own requests; the rest is for the admin group. Each gets one command as its argument and JSON on stdin, and prints a JSON object as its last line of output.
   The commands and answers the portal expects are in `fake_helper` and `fake_admin_helper` in `tests/fakeslurm.py`.
@@ -91,10 +96,10 @@ Updating is copying `app/` again: each user's server reloads it within about 10 
 | `app/cbbl/config.py` | the settings and their defaults |
 | `app/cbbl/slurm.py` | every Slurm command and the parsing of its JSON |
 | `app/cbbl/views.py`, `layout.py` | the users' pages; the page frame and icons |
-| `app/cbbl/jobform.py` | New job: checks, batch script, equivalent command |
+| `app/cbbl/jobform.py` | New job: checks, batch script, equivalent command, and a command or batch script read back into the form |
 | `app/cbbl/account.py` | Account: SSH keys (written as the user), the account helper |
 | `app/cbbl/admin.py`, `adminviews.py`, `adminhealth.py` | who is an admin, the admin helper, the admin pages |
-| `app/cbbl/adminpriority.py`, `reservations.py` | the Priority page and Cluster status's list; the users' Reservations page |
+| `app/cbbl/adminpriority.py`, `reservations.py` | the Priority page and the list of priority and reservations; the users' Reservations page |
 | `app/public/static/` | CSS, JavaScript, icon |
 | `login/login.html` | the sign-in page (static, served by Apache) |
 

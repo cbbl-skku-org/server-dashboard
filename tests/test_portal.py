@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.join(HERE, "..", "app"))
 sys.path.insert(0, HERE)
 
 import fakeslurm  # noqa: E402
-from cbbl import jobform, slurm, util, web  # noqa: E402
+from cbbl import adminhealth, jobform, slurm, util, web  # noqa: E402
 
 TMP = tempfile.mkdtemp(prefix="cbbl-portal-test-")
 atexit.register(shutil.rmtree, TMP, ignore_errors=True)
@@ -46,7 +46,8 @@ class Pages(unittest.TestCase):
     def test_every_page_renders(self):
         for url, text in [("/", "Hello, alice"), ("/jobs", "train-esm2"), ("/new", "Equivalent command"),
                           ("/timeline", "tl-bar"), ("/cluster", "node2"), ("/history", "CPU-hours per week"),
-                          ("/tests", "Test runs"), ("/account", "SSH public keys"), ("/job/1187", "Cancel job"),
+                          ("/timeline?view=mine", "tl-bar"), ("/timeline?range=7d", "All nodes"),
+                          ("/account", "SSH public keys"), ("/job/1187", "Cancel job"),
                           ("/job/1186", "Usage and efficiency"), ("/job/1190", "Not started yet"),
                           ("/job/1191_3", "md-sweep"), ("/history?days=7", "7 days")]:
             with self.subTest(url=url):
@@ -193,19 +194,15 @@ class AccountAndTests(unittest.TestCase):
         fakeslurm.SUBMITTED.clear()
         fakeslurm.HELPER_CALLS.clear()
 
-    def test_quick_test_job(self):
-        _, _, body = call("/tests")
-        self.assertIn("up to 10 minutes, 4 CPUs and 16 GB", body)
-        self.assertIn("srun -p debug --pty bash", body)
-        status, headers, body = call("/tests", "POST", {"cpus": "2", "workdir": HOME, "command": "python t.py"}, ORIGIN)
-        self.assertEqual(status, 303, body[-2000:])
-        script = fakeslurm.SUBMITTED[0]
-        self.assertIn("#SBATCH --partition=debug\n", script)
-        self.assertIn("#SBATCH --cpus-per-task=2\n", script)
-        self.assertIn("#SBATCH --mem=8G\n", script)
-        self.assertNotIn("--time", script)                           # the partition's 10 minutes
-        status, _, body = call("/tests", "POST", {"cpus": "5", "workdir": HOME, "command": "x"}, ORIGIN)
-        self.assertIn("At most 4 CPUs for a quick test.", body)
+    def test_test_runs_page_is_gone(self):
+        status, headers, _ = call("/tests")
+        self.assertEqual((status, headers["Location"]), (303, "/pun/sys/cbbl/new"))   # old links land on New job
+        self.assertEqual(call("/tests", "POST", {"cpus": "1", "command": "x"}, ORIGIN)[0], 405)
+        _, _, body = call("/")
+        self.assertNotIn("Test runs", body)
+        self.assertIn("Quick tests &amp; disk", body)
+        self.assertIn(">Timeline</span>", body)
+        self.assertNotIn("My timeline", body)
 
     def test_quick_box_on_new_job(self):
         _, _, body = call("/new")
@@ -254,7 +251,7 @@ class AccountAndTests(unittest.TestCase):
         _, _, body = call("/account/telegram", "POST", {"chat_id": "123456789", "ev_done": "1", "action": "test"}, ORIGIN)
         self.assertIn("A test message is on its way", body)
         self.assertEqual(fakeslurm.TELEGRAM["events"], {"done": True, "failed": False, "idle": False, "priority": False,
-                                                       "requests": False})
+                                                       "requests": False, "disks": False})
 
     def test_temporary_password_first(self):
         import cbbl.account as account
@@ -526,6 +523,49 @@ class AdminPages(unittest.TestCase):
             os.remove(slurm.IDLE_STATUS)
             slurm.IDLE_STATUS = idle_path
 
+    def test_health_disks(self):
+        idle_path, slurm.IDLE_STATUS = slurm.IDLE_STATUS, os.path.join(TMP, "idle-disks.json")
+        report = json.loads(json.dumps(fakeslurm.HEALTH_REPORT))
+        try:
+            with open(slurm.IDLE_STATUS, "w") as f:
+                json.dump({"updated": time.time(), "idle": {}, "cancelled": {}}, f)
+            body = call("/admin/health")[2]
+            for text in ("Disk health", "slot 251:15", "hot spare", "idle spare: no readings", "15 % worn",
+                         "about 4.4 years left", "Samsung SSD 970 EVO Plus 1TB", "WDC WUH722020BL5204",
+                         "RAID 6 array of 15 disks + 1 hot spare, 236.469 TB", ">Optimal</span>", "every 6 hours", ">20 TB<", ">1 TB<",
+                         "system disk</div>", "hot spare</div>", '<th title="The disk&#x27;s own power-on time'):
+                self.assertIn(text, body)
+            self.assertNotIn("Disk:", body)                                       # no disk problems today
+            self.assertNotIn("disk-legend", body)                                 # the explanations: tooltips only
+            disks = fakeslurm.HEALTH_REPORT["disks"]
+            disks["problems"] = [{"level": "bad", "key": "node3:array:0/239",
+                                  "text": "node3: the RAID6 array 0/239 is degraded (a disk is missing: replace it)"},
+                                 {"level": "warn", "key": "node2:SERIAL04:defects",
+                                  "text": "node2 slot 31:2 (SEAGATE ST22000NM000E): 3 remapped sectors"}]
+            disks["nodes"]["node3"]["arrays"][0]["state"] = "Dgrd"
+            body = call("/admin/health")[2]
+            self.assertIn("Needs attention", body)
+            self.assertIn("Disk: node3: the RAID6 array 0/239 is degraded", body)
+            self.assertIn("Disk: node2 slot 31:2 (SEAGATE ST22000NM000E): 3 remapped sectors", body)
+            self.assertIn(">Degraded</span>", body)
+            self.assertIn(">check</span>", body)                                   # the disk's own row
+            disks["at"] = time.time() - 20 * 3600
+            self.assertIn("The disk check last ran 20h", call("/admin/health")[2])
+            del fakeslurm.HEALTH_REPORT["disks"]
+            body = call("/admin/health")[2]                                      # disk_check off (the default)
+            self.assertNotIn("Disk health", body)
+            self.assertNotIn("disk check", body)
+            adminhealth.DISK_CHECK = True                                         # a site that runs one
+            body = call("/admin/health")[2]
+            self.assertIn("The disk check has no report yet", body)
+            self.assertIn("No report from the disk check yet", body)
+        finally:
+            adminhealth.DISK_CHECK = False
+            fakeslurm.HEALTH_REPORT.clear()
+            fakeslurm.HEALTH_REPORT.update(report)
+            os.remove(slurm.IDLE_STATUS)
+            slurm.IDLE_STATUS = idle_path
+
     def test_health_problems(self):
         from cbbl import adminhealth
         now = fakeslurm.NOW
@@ -624,18 +664,18 @@ class AdminPages(unittest.TestCase):
                  "until": time.time() + 86400}]}, f)
         fakeslurm.ADMINS.clear()                                          # an ordinary user
         try:
-            _, _, body = call("/cluster")
+            _, _, body = call("/reservations")
             for text in ("Priority and reservations (4)", "More priority for all their jobs", "permanent",
                          "Job 1302: move up", "Reserved: 12 CPUs of node2", "bob, carol",
                          "Maintenance: no jobs on node[1-3]", "Nov 22, 12:00 AM"):
                 self.assertIn(text, body)
-            self.assertIn("Priority and reservations", call("/cluster?partial=1")[2])
+            self.assertNotIn("Priority and reservations", call("/cluster")[2])   # only on Reservations (2026-10-27)
         finally:
             os.remove(path)
         saved = list(fakeslurm.RESERVATIONS)
         fakeslurm.RESERVATIONS.clear()
         try:
-            self.assertIn("Nobody has priority and no CPUs are reserved", call("/cluster")[2])
+            self.assertIn("Nobody has priority and no CPUs are reserved", call("/reservations")[2])
         finally:
             fakeslurm.RESERVATIONS[:] = saved
 
@@ -727,7 +767,7 @@ class AdminPages(unittest.TestCase):
                                   "start": now, "until": now + 86400, "length": 86400, "reason": "x", "at": now,
                                   "state": "pending"}]
         try:
-            status, _, body = call("/timeline")
+            status, _, body = call("/timeline?view=mine")
             self.assertEqual(status, 200, body[-2000:])
             for text in ('class="tl-band b-res"', "Your reservation: 16 CPUs of node3",
                          'class="tl-band b-req"', "Requested: 24 CPUs of node2 (waiting for an admin)",
@@ -735,9 +775,68 @@ class AdminPages(unittest.TestCase):
                 self.assertIn(text, body)
             self.assertNotIn("8 CPUs of node2", body)                  # other people's reservations stay off
             self.assertNotIn('class="tl-band b-maint"', body)            # 20 days ahead: listed, not drawn
+            _, _, body = call("/timeline")                               # All nodes: maintenance only
+            self.assertIn("Coming up: Maintenance: no jobs on node[1-3]", body)
+            self.assertNotIn("Your reservation", body)
+            self.assertNotIn("Requested: 24 CPUs", body)
         finally:
             fakeslurm.RESERVATIONS[:] = saved
             fakeslurm.REQUESTS.clear()
+
+    def test_timeline_all_nodes(self):
+        fakeslurm.ADMINS.clear()                                          # an ordinary user
+        try:
+            status, _, body = call("/timeline")
+            self.assertEqual(status, 200, body[-2000:])
+            for text in ('class="tab active" href="/pun/sys/cbbl/timeline?view=all" aria-current="page">All nodes',
+                         'href="/pun/sys/cbbl/timeline?view=mine">My jobs', '<option value="48h" selected>last 48 h',
+                         "<b>node1</b><span>48 CPUs</span>", "<b>node3</b><span>48 CPUs</span>",
+                         "<span>bob 24 CPUs</span>",                         # another user's running job
+                         "<span>alice 32 CPUs</span>", 'href="/pun/sys/cbbl/job/1187"',   # own: opens the job
+                         "<b>Waiting</b><span>no node yet</span>", "<span>carol 96 CPUs</span>",
+                         "<b>node3</b><span>finished</span>", "<span>bob 12 CPUs</span>",
+                         'class="tl-plan u"', 'tabindex="0" role="button"', "data-tip=", "Ends at the latest",
+                         "Colour = user"):
+                self.assertIn(text, body)
+            # a waiting job Slurm has planned on a node sits in that node's row, not under Waiting
+            waiting_row = body.split("<b>Waiting</b>")[1].split('class="tl-row"')[0]
+            self.assertNotIn("carol 4 CPUs", waiting_row)
+            self.assertIn("carol 4 CPUs", body.split("<b>node2</b><span>96 CPUs</span>")[1].split("<b>node3</b>")[0])
+            # a finished job on two nodes shows under both
+            self.assertEqual(body.count("<span>carol 4 CPUs</span>"), 3)
+            self.assertNotIn('href="/pun/sys/cbbl/job/1300"', body)        # others' jobs have no page for this user
+            _, _, body = call("/timeline?view=mine&range=24h")
+            self.assertIn('<option value="24h" selected>', body)
+            self.assertIn('href="/pun/sys/cbbl/timeline?view=all&amp;range=24h"', body)   # the tabs keep the period
+            self.assertNotIn("bob 24 CPUs", body)
+            self.assertIn('<option value="48h" selected>', call("/timeline?range=bogus")[2])
+        finally:
+            fakeslurm.ADMINS.add("alice")
+
+    def test_cluster_status_shows_who_runs_what(self):
+        status, _, body = call("/cluster?partial=1")
+        self.assertEqual(status, 200, body[-2000:])
+        for text in ("Free memory", "by 2 users", "Running jobs (ending soonest first)", "Waiting jobs (next to start "
+                     "first)", "alice <span class=\"chip-x\">32 CPUs</span>", "bob <span class=\"chip-x\">24 CPUs",
+                     'title="bob: 24 CPUs"', "md-run", "waiting for free CPUs or memory", "held by the admin",
+                     "not known yet", '<a href="/pun/sys/cbbl/job/1188">'):
+            self.assertIn(text, body)
+        self.assertNotIn('href="/pun/sys/cbbl/job/1300"', body)            # bob's job: no link
+        running = body.split("Running jobs (ending soonest first)")[1].split("Waiting jobs")[0]
+        # ending soonest first: 1188 (12 h limit) before 1187 (1 day) before 1300 (2 days)
+        self.assertLess(running.index("blast-uniref50"), running.index("train-esm2"))
+        self.assertLess(running.index("train-esm2"), running.index("md-run"))
+        waiting = body.split("Waiting jobs (next to start first)")[1]
+        self.assertLess(waiting.index(">qc<") if ">qc<" in waiting else waiting.index(" qc"), waiting.index("assembly"))
+        # node2: 72 CPUs in use, alice's 32 from squeue, the rest grey
+        self.assertIn('title="other jobs: 40 CPUs"', body)
+        self.assertEqual(slurm.cpus_on({"nodes": "node[1,3]", "cpus": 8, "node_cpus": {}}, "node3"), 4)
+
+    def test_user_colours_stay_with_a_person(self):
+        from cbbl import layout
+        self.assertEqual(layout.user_colour("bob"), layout.user_colour("bob"))
+        self.assertIn(layout.user_colour("someone-unknown"), layout.USER_COLOURS)
+        self.assertEqual(layout.chip("<x>"), f'<span class="chip" style="--uc:{layout.user_colour("<x>")}">&lt;x&gt;</span>')
 
     def test_hostnames(self):
         self.assertEqual(slurm.hostnames("cn[01,200]"), ["cn01", "cn200"])
@@ -819,6 +918,87 @@ class Form(unittest.TestCase):
         self.assertIn("-J it_s", line)
         self.assertIn("--wrap='echo '\"'\"'hi there'\"'\"' && python x.py'", line)
 
+
+
+class FromCommand(unittest.TestCase):
+    """The Equivalent command box the other way round: a command fills the form."""
+    nodes = slurm.nodes()
+    part = dict(slurm.partition(), debug=slurm.debug_partition())
+    envs = slurm.conda_envs(HOME)
+
+    def read(self, text, workdir=HOME):
+        return jobform.from_command(text, HOME, self.part, self.nodes, self.envs, workdir=workdir)
+
+    def test_round_trip(self):
+        """Every command the form writes reads back as the same job."""
+        forms = [dict(cpus="8", mem="32", time="2d", name="md", conda="esm", command="python run_md.py --n 3"),
+                 dict(cpus="2", mem="0.5", time="45m", node="internet", command="echo 'hi there' && pip list"),
+                 dict(cpus="4", time="10m", quick="1", node="node1", command="hostname\nsleep 5"),
+                 dict(cpus="1", time="1d", conda="base", workdir="~/blast", command="bash run_all.sh a 'b c'")]
+        for form in forms:
+            with self.subTest(form=form):
+                spec, errors = jobform.parse(dict({"workdir": HOME}, **form), HOME, self.nodes, self.part, self.envs)
+                self.assertEqual(errors, {})
+                line = jobform.command_line(spec, HOME)
+                values, notes, error = self.read(line)
+                self.assertEqual((notes, error), ([], ""))
+                again, errors = jobform.parse(dict({"workdir": HOME}, **values), HOME, self.nodes, self.part, self.envs)
+                self.assertEqual(errors, {})
+                self.assertEqual(jobform.command_line(again, HOME), line)
+
+    def test_options(self):
+        values, notes, error = self.read("sbatch -c4 --mem-per-cpu=8G -w node1 --gres=gpu:1 -o out.%j -J x "
+                                         "--time 1-12:00:00 --wrap 'echo hi'")
+        self.assertEqual({k: values[k] for k in ("cpus", "mem", "node", "name", "time", "command")},
+                         {"cpus": "4", "mem": "32", "node": "node1", "name": "x", "time": "1d 12h",
+                          "command": "echo hi"})
+        self.assertNotIn("workdir", values)        # not named: the form keeps its folder
+        self.assertIn("--gres=gpu:1 is not in the form: left out.", notes)
+        self.assertTrue(any(n.startswith("--output=out.%j is left out") for n in notes))
+        values, notes, _ = self.read("sbatch -p debug -C internet --wrap=hostname")
+        self.assertEqual((values["quick"], values["time"], values["node"], values["cpus"], values["mem"]),
+                         ("1", "10m", "internet", "1", ""))   # not named: the defaults (RAM follows the CPUs)
+        values, notes, _ = self.read("sbatch -n 8 -N 2 -p pilot --mem=0 --wrap=x")
+        self.assertEqual(len(notes), 4)
+        self.assertEqual(values["cpus"], "1")
+
+    def test_script_and_cd(self):
+        os.makedirs(HOME + "/fc", exist_ok=True)
+        with open(HOME + "/fc/run.py", "w") as f:
+            f.write("#!/usr/bin/env python3\n#SBATCH -c 16\n#SBATCH --mem=64G\nprint(1)\n#SBATCH -c 99\n")
+        values, notes, _ = self.read("cd ~/fc\nsbatch -t 90 run.py 'a b'")
+        self.assertEqual((values["cpus"], values["mem"], values["time"], values["workdir"], values["command"]),
+                         ("16", "64", "1h 30m", "~/fc", "python3 run.py 'a b'"))
+        self.assertIn("Read the #SBATCH lines of run.py.", notes)
+        values, notes, _ = self.read("sbatch -c 2 run.py", workdir=HOME + "/fc")   # relative to the form's folder
+        self.assertEqual(values["cpus"], "2")       # the command line wins over the script
+        values, notes, _ = self.read("sbatch missing.sh")
+        self.assertEqual(values["command"], "bash missing.sh")
+        self.assertTrue(notes[0].startswith("Could not open missing.sh"))
+        values, notes, _ = self.read("#!/bin/bash -l\n#SBATCH --job-name=t\n#SBATCH --cpus-per-task=3\n"
+                                     "#SBATCH --chdir=" + HOME + "/fc\n# a comment\nsource ~/miniconda3/etc/profile.d/"
+                                     "conda.sh\nconda activate esm\npython x.py\nmodule list\n")
+        self.assertEqual((values["name"], values["cpus"], values["conda"], values["workdir"], values["command"]),
+                         ("t", "3", "esm", "~/fc", "python x.py\nmodule list"))
+
+    def test_not_understood(self):
+        self.assertEqual(self.read("python train.py")[2], "Start with sbatch (or srun), or paste a batch script.")
+        self.assertEqual(self.read("sbatch --wrap='oops")[2], "A quote is not closed.")
+        self.assertEqual(self.read("  ")[2], "Type or paste an sbatch command.")
+        values, notes, _ = self.read("module load x; sbatch --wrap='conda activate nope && run'; squeue")
+        self.assertEqual(values["command"], "conda activate nope && run")
+        self.assertEqual(len(notes), 3)
+
+    def test_endpoint(self):
+        status, _, body = call("/new/from-command", "POST", {"text": "sbatch -c 3 --wrap=hostname", "workdir": "~"},
+                               ORIGIN)
+        self.assertEqual(status, 200)
+        d = json.loads(body)
+        self.assertEqual((d["values"]["cpus"], d["error"]), ("3", ""))
+        status, _, _ = call("/new/from-command", "POST", {"text": "sbatch --wrap=x"})   # not from the portal's page
+        self.assertEqual(status, 403)
+        _, _, body = call("/new")
+        self.assertIn('data-from-command="/pun/sys/cbbl/new/from-command"', body)
 
 class Helpers(unittest.TestCase):
     def test_expand_path(self):

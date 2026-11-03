@@ -1,5 +1,8 @@
 """Page frame (sidebar, top bar), icons and small building blocks shared by the pages."""
+import functools
 import os
+import pwd
+import zlib
 
 from .config import SETTINGS
 from .util import h
@@ -12,10 +15,9 @@ NAV = [
     ("overview", "Overview", "/", "grid"),
     ("jobs", "My jobs", "/jobs", "list"),
     ("new", "New job", "/new", "plus"),
-    ("timeline", "My timeline", "/timeline", "calendar"),
+    ("timeline", "Timeline", "/timeline", "calendar"),
     ("cluster", "Cluster status", "/cluster", "cpu"),
     ("reservations", "Reservations", "/reservations", "lock"),
-    ("tests", "Test runs", "/tests", "flask"),
     ("history", "History & stats", "/history", "history"),
     ("account", "Account", "/account", "user"),
 ]
@@ -161,6 +163,33 @@ def head(title, subtitle, actions=""):
 
 def badge(label, style):
     return f'<span class="badge b-{h(style)}">{h(label)}</span>'
+
+
+# One colour per member on Timeline and Cluster status (white text reads on each, in both themes). Members get them in
+# the order of their UIDs, so a colour stays with a person and a new member takes the next one.
+USER_COLOURS = ["#db2777", "#2563eb", "#dc2626", "#0f766e", "#c2410c", "#7c3aed", "#15803d", "#b45309", "#0e7490",
+                "#c026d3", "#4f46e5", "#be123c", "#0369a1", "#4d7c0f", "#9333ea", "#a16207", "#047857", "#475569"]
+SYSTEM_USERS = {"slurm", "munge"}
+
+
+@functools.lru_cache(maxsize=1)
+def _members():
+    found = sorted((p.pw_uid, p.pw_name) for p in pwd.getpwall() if 1000 <= p.pw_uid < 60000
+                   and p.pw_name not in SYSTEM_USERS and not p.pw_shell.endswith(("nologin", "false")))
+    return {name: i for i, (_, name) in enumerate(found)}
+
+
+def user_colour(user):
+    i = _members().get(user)
+    if i is None:
+        i = zlib.crc32(user.encode())
+    return USER_COLOURS[i % len(USER_COLOURS)]
+
+
+def chip(user, text=""):
+    """The user's name on their colour (Cluster status, Timeline)."""
+    return (f'<span class="chip" style="--uc:{user_colour(user)}">{h(user)}'
+            + (f' <span class="chip-x">{h(text)}</span>' if text else "") + "</span>")
 
 
 def meter(fraction, cls=""):

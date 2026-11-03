@@ -51,6 +51,8 @@
     "clock_bad": 60.0,
     "mem_warn": 0.1,
     "idle_stale": 900,
+    "disk_check": false,
+    "disks_stale": 46800,
     "backup_max_age": 108000,
     "backup_long_run": 93600,
     "timers": {

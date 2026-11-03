@@ -1,5 +1,5 @@
 """Browser check of the New job form (fake Slurm): RAM follows the CPUs and the job name follows the command until
-the user types their own value. Run like screenshot.py:
+the user types their own value; a command typed into the equivalent command box fills the form. Run like screenshot.py:
   QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software QTWEBENGINE_DISABLE_SANDBOX=1 \\
       python -I tests/js_form_check.py
 """
@@ -24,6 +24,7 @@ QCoreApplication.setAttribute(Qt.AA_ShareOpenGLContexts)
 from PyQt5.QtWebEngineWidgets import QWebEngineView  # noqa: E402
 from PyQt5.QtWidgets import QApplication  # noqa: E402
 
+TYPED = "cd ~ && sbatch -J fc -c 6 --mem=20G -t 3:00:00 -w node1 --gres=gpu:1 --wrap='python fc.py'"
 # (description, JavaScript that changes the form, field to read, expected value)
 STEPS = [
     ("starts with the defaults", "", "mem", "4"),
@@ -39,6 +40,23 @@ STEPS = [
     ("quick test box -> 10 minutes", "tick('quick', true)", "time", "10m"),
     ("quick test in the command", "", "#cmd-text", "cd ~ && sbatch -p debug -J my-run -c 2 --mem=8G -t 10 --wrap='bash other.sh'"),
     ("quick test box off -> back to 1d", "tick('quick', false)", "time", "1d"),
+    # the other way: a command typed into the equivalent command box fills the form
+    ("command box -> CPUs", "typeCmd(" + json.dumps(TYPED) + ")", "cpus", "6"),
+    ("command box -> RAM", "", "mem", "20"),
+    ("command box -> time", "", "time", "3h"),
+    ("command box -> node", "", "node", "node1"),
+    ("command box -> name", "", "name", "fc"),
+    ("command box -> command", "", "command", "python fc.py"),
+    ("option not in the form noted", "", "#cmd-notes", "--gres=gpu:1 is not in the form: left out."),
+    ("box keeps the text while in it", "", "#cmd-text", TYPED),
+    ("leaving the box rewrites it", "leave()", "#cmd-text",
+     "cd ~ && sbatch -J fc -c 6 --mem=20G -t 3:00:00 -w node1 --wrap='python fc.py'"),
+    ("form edit hides the notes", "set('cpus', '5')", "!#cmd-notes", True),
+    ("not understood -> message", "typeCmd('python x.py')", "#cmd-error",
+     "Start with sbatch (or srun), or paste a batch script."),
+    ("... and the form stays", "", "cpus", "5"),
+    ("RAM not named -> follows the CPUs", "typeCmd('sbatch -c 3 --wrap=x')", "mem", "12"),
+    ("quick test from -p debug", "typeCmd('sbatch -p debug --wrap=x')", "quick", True),
 ]
 HELPER = """window.set = function (name, value) {
   var el = document.querySelector('[name="' + name + '"]');
@@ -49,8 +67,18 @@ window.tick = function (name, on) {
   el.checked = on; el.dispatchEvent(new Event('change', {bubbles: true}));
 };
 window.focusIt = function (name) { document.querySelector('[name="' + name + '"]').focus(); };
+window.typeCmd = function (text) {
+  var el = document.getElementById('cmd-text');
+  el.focus(); el.value = text; el.dispatchEvent(new Event('input', {bubbles: true}));
+};
+// the offscreen page never has the focus, so blur() fires no event there: send the one a browser sends
+window.leave = function () {
+  var el = document.activeElement; el.blur(); el.dispatchEvent(new FocusEvent('blur'));
+};
 window.get = function (sel) {
+  if (sel[0] === '!') return document.querySelector(sel.slice(1)).hidden;
   var el = sel[0] === '#' ? document.querySelector(sel) : document.querySelector('[name="' + sel + '"]');
+  if (el.type === 'checkbox') return el.checked;
   return el.value !== undefined ? el.value : el.textContent;
 };"""
 

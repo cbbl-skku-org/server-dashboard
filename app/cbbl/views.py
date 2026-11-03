@@ -1,7 +1,9 @@
 """The portal's pages. Each view takes the request and returns HTML text or a Response."""
+import collections
 import csv
 import datetime
 import io
+import json
 import math
 import os
 import time
@@ -9,7 +11,7 @@ import time
 from . import account as account_mod
 from . import admin, jobform, slurm
 from .config import SETTINGS, all_nodes, node_list
-from .layout import badge, empty, head, icon, meter, notice, page, stat_card
+from .layout import badge, chip, empty, head, icon, meter, notice, page, stat_card, user_colour
 from .response import Response, json_response, redirect
 from .util import (fmt_bytes, fmt_duration, fmt_mb, fmt_minutes, fmt_num, fmt_time, h, limit_text, plural)
 
@@ -170,7 +172,7 @@ def overview(req):
         defaults.append(fmt_minutes(part["default_time"]))
     quick = slurm.debug_partition()
     side = kv_rows([
-        ("Quick test jobs", f'<a href="{link(req, "/tests")}">enabled</a> · partition debug' if quick else
+        ("Quick test jobs", f'<a href="{link(req, "/new")}">on New job</a> · partition debug' if quick else
          '<span class="muted">not set up</span>'),
         ("Max length", h(fmt_minutes(quick["max_time"])) if quick else "—"),
         ("Size", h(f"up to {quick.get('max_cpus_per_node') or '?'} CPUs, {fmt_mb(quick.get('max_mem_per_node'))}")
@@ -190,7 +192,7 @@ def overview(req):
              f'<a class="btn btn-primary" href="{link(req, "/new")}">{icon("plus")}New job</a>'),
         problems_notice(problems),
         f'<div class="grid stats">{cards}</div>',
-        f'<div class="grid two-one stretch">{card("My limits and current usage", usage)}{card("Test runs &amp; disk", side)}</div>',
+        f'<div class="grid two-one stretch">{card("My limits and current usage", usage)}{card("Quick tests &amp; disk", side)}</div>',
         card("Active jobs", f'<div data-refresh="{link(req, "/jobs?partial=1")}" data-interval="15000">{active}</div>'),
     ])
     return page(req, "overview", "Overview", body)
@@ -520,8 +522,12 @@ def new_job(req, values=None, errors=None, message="", preview=None):
                    f'</div><pre class="code" id="script-text">{h(script_text)}</pre></section>')
     idle_rule = dict(slurm.IDLE_RULE, **((slurm.idle_status() or {}).get("rule") or {}))
     right = "".join([
-        card("Equivalent command", f'<pre class="code" id="cmd-text">{h(cmd_text)}</pre><button class="btn btn-sm" '
-             f'type="button" data-copy="#cmd-text">{icon("copy")}Copy</button>'),
+        card("Equivalent command", '<textarea class="code" id="cmd-text" rows="3" spellcheck="false" '
+             f'autocomplete="off" aria-describedby="cmd-hint" data-from-command="{link(req, "/new/from-command")}">'
+             f'{h(cmd_text)}</textarea>'
+             '<div class="hint" id="cmd-hint">Or type or paste an sbatch command, or a batch script: the form '
+             'follows.</div><div class="error-text" id="cmd-error"></div><ul class="cmd-notes" id="cmd-notes" hidden>'
+             f'</ul><button class="btn btn-sm" type="button" data-copy="#cmd-text">{icon("copy")}Copy</button>'),
         f'<section class="card info">{icon("info", "ic info-ic")}<div><b>Memory is enforced</b><p>A job that uses '
         "more memory than it asked for is stopped (state “Out of memory”). Each job runs only on its own CPU "
         "threads: 8 CPUs means 8 threads.</p></div></section>",
@@ -542,7 +548,8 @@ def new_job(req, values=None, errors=None, message="", preview=None):
     ])
     msg = notice("error", h(message)) if message else ""
     body = "".join([
-        head("New job", "Fill in the form, or copy the equivalent sbatch command and run it in a terminal on any node."),
+        head("New job", "Fill in the form, or copy the equivalent sbatch command and run it in a terminal on any node. "
+             "A command typed into that box fills in the form."),
         problems_notice(problems), msg,
         f'<div class="grid two-one"><div class="stack">{form}{script_card}</div><div class="stack">{right}</div></div>',
     ])
@@ -580,16 +587,30 @@ def new_job_preview(req):
     })
 
 
+def new_job_from_command(req):
+    """The Equivalent command box, the other way round: an sbatch command or batch script -> the form's values."""
+    problems = []
+    nodes, part, envs = _form_context(req, problems)
+    values, notes, error = jobform.from_command(req.form.get("text", ""), req.home, part, nodes, envs,
+                                                workdir=jobform.expand((req.form.get("workdir") or "").strip() or
+                                                                       req.home, req.home))
+    return json_response({"values": values, "notes": notes, "error": error, "problems": problems})
+
+
 # ---------------------------------------------------------------------------------------------------- timeline
 
 PX_PER_HOUR = 112
 LANE = 30
 MAX_BARS = 2000
+RANGES = [("24h", "last 24 h", 1), ("48h", "last 48 h", 2), ("7d", "last 7 days", 7)]
+VIEWS = [("all", "All nodes"), ("mine", "My jobs")]
+TL_LABEL = 116   # width of the All nodes view's row labels (px; portal.css .tl-all .tl-label)
 
 
-def timeline_bands(req, problems, now):
-    """Shaded behind the jobs: the user's reservations (also those others asked for with them, or an admin made), their
-    requests still waiting for an admin, and maintenance windows (no jobs). Not other people's reservations."""
+def timeline_bands(req, problems, now, mine=True):
+    """Shaded behind the jobs: maintenance windows (no jobs) and, on My jobs, the user's reservations (also those others
+    asked for with them, or an admin made) and their requests still waiting for an admin. Not other people's
+    reservations."""
     bands = []
     for r in attempt(problems, slurm.reservations, default=[]):
         if not r["start"]:
@@ -598,57 +619,44 @@ def timeline_bands(req, problems, now):
         what = f"{r['cores']} CPUs of {r['nodes']}" if r["cores"] and r["name"].startswith("prio-") else r["nodes"]
         if "MAINT" in r["flags"]:
             bands.append({"start": r["start"], "end": end, "kind": "maint", "label": f"Maintenance: no jobs on {r['nodes']}"})
-        elif req.user in r["users"]:
+        elif mine and req.user in r["users"]:
             bands.append({"start": r["start"], "end": end, "kind": "res", "label": f"Your reservation: {what}"})
-    info = admin.helper("requests-mine")
-    if not info.get("ok"):
-        problems.append("Your reservation requests: " + info.get("error", "no answer"))
-    for q in info.get("requests") or []:
-        if q["state"] == "pending":
-            start = now if q.get("length") else q["start"]
-            bands.append({"start": start, "end": start + q["length"] if q.get("length") else q["until"], "kind": "req",
-                          "label": f"Requested: {q['cores']} CPUs of {q['node']} (waiting for an admin)"})
+    if mine:
+        info = admin.helper("requests-mine")
+        if not info.get("ok"):
+            problems.append("Your reservation requests: " + info.get("error", "no answer"))
+        for q in info.get("requests") or []:
+            if q["state"] == "pending":
+                start = now if q.get("length") else q["start"]
+                bands.append({"start": start, "end": start + q["length"] if q.get("length") else q["until"],
+                              "kind": "req", "label": f"Requested: {q['cores']} CPUs of {q['node']} (waiting for an admin)"})
     return [b for b in bands if b["end"] > now - 7 * 86400]
 
 
-def timeline(req):
-    now = time.time()
-    problems = []
-    jobs = {j["id"]: j for j in attempt(problems, slurm.my_jobs_since, req.user, 7, default=[])}
-    for j in attempt(problems, slurm.my_active_jobs, req.user, default=[]):
-        jobs[j["id"]] = j  # squeue knows when waiting jobs are expected to start
-    t0 = (int(now - 7 * 86400) // 3600) * 3600
-    bars = []
-    for j in jobs.values():
-        label, style = slurm.state_label(j["state"])
-        plan_end = None
-        if j["state"] == "PENDING":
-            start = j["start"] if j["start"] and j["start"] > now else now
-            end = start + (j["time_limit"] or 60) * 60
-            kind = "wait"
-        elif j["state"] in slurm.RUNNING_STATES or (j["active"] and j["start"]):
-            start, end, kind = j["start"] or now, now, "run"
-            if j["time_limit"]:
-                plan_end = start + j["time_limit"] * 60
-        elif j["start"]:
-            start, end, kind = j["start"], max(j["end"] or j["start"], j["start"]), style
-        else:
-            continue  # cancelled before it started
-        if end < t0:
-            continue
-        bars.append({"job": j, "start": max(start, t0), "end": end, "plan_end": plan_end, "kind": kind,
-                     "label": label})
-    dropped = 0
-    if len(bars) > MAX_BARS:
-        bars.sort(key=lambda b: b["start"], reverse=True)
-        dropped, bars = len(bars) - MAX_BARS, bars[:MAX_BARS]
-    bands = timeline_bands(req, problems, now)
-    horizon = max([now + 86400] + [min(b["plan_end"] or b["end"], now + 7 * 86400) for b in bars]
-                  + [min(b["end"], now + 7 * 86400) for b in bands if b["start"] < now + 7 * 86400])
-    t1 = (int(horizon) // 3600 + 1) * 3600
-    px = PX_PER_HOUR / 3600.0
-    width = int((t1 - t0) * px)
+def timeline_bar(j, now, t0):
+    """Where a job sits on the time axis: running jobs up to now (and their time limit after it), waiting jobs from
+    their estimated start, finished ones as they ran. None if it is not on the chart."""
+    label, style = slurm.state_label(j["state"])
+    plan_end = None
+    if j["state"] == "PENDING":
+        start = j["start"] if j["start"] and j["start"] > now else now
+        end = start + (j["time_limit"] or 60) * 60
+        kind = "wait"
+    elif j["state"] in slurm.RUNNING_STATES or (j["active"] and j["start"]):
+        start, end, kind = j["start"] or now, now, "run"
+        if j["time_limit"]:
+            plan_end = start + j["time_limit"] * 60
+    elif j["start"]:
+        start, end, kind = j["start"], max(j["end"] or j["start"], j["start"]), style
+    else:
+        return None  # cancelled before it started
+    if end < t0:
+        return None
+    return {"job": j, "start": max(start, t0), "end": end, "plan_end": plan_end, "kind": kind, "label": label}
 
+
+def pack_lanes(bars, px):
+    """Put each bar in the first lane that is free at its start; returns the number of lanes."""
     lanes = []
     gap = 8 / px
     for b in sorted(bars, key=lambda b: b["start"]):
@@ -661,9 +669,12 @@ def timeline(req):
         else:
             lanes.append(right)
             b["lane"] = len(lanes) - 1
-    height = max(360, (len(lanes)) * LANE + 24)
+    return len(lanes)
 
-    days, hours = [], []
+
+def time_axis(t0, t1, px):
+    """The axis' day and hour labels, and the lines at midnight to draw behind the bars."""
+    days, hours, majors = [], [], []
     t = t0
     while t < t1:
         lt = time.localtime(t)
@@ -673,18 +684,48 @@ def timeline(req):
             days.append(f'<div class="tl-day" style="left:{x}px;width:{int((day_end - t) * px)}px">'
                         f'<span>{h(time.strftime("%a %d %B", lt))}</span></div>')
         if lt.tm_hour == 0 and t != t0:
-            hours.append(f'<div class="tl-major" style="left:{x}px"></div>')
+            majors.append(f'<div class="tl-major" style="left:{x}px"></div>')
         hours.append(f'<span class="tl-hour" style="left:{x}px">{lt.tm_hour:02d}:00</span>')
         t += 3600
+    head_html = f'<div class="tl-days">{"".join(days)}</div><div class="tl-hours">{"".join(hours)}</div>'
+    return head_html, "".join(majors)
 
-    items = []
-    for b in sorted(bands, key=lambda b: b["start"]):
-        if b["start"] >= t1:
-            continue
-        left, right = int((max(b["start"], t0) - t0) * px), int((min(b["end"], t1) - t0) * px)
-        tip = f'{b["label"]} · {fmt_time(b["start"])} – {fmt_time(b["end"])}'
-        items.append(f'<div class="tl-band b-{b["kind"]}" style="left:{left}px;width:{max(2, right - left)}px" '
-                     f'title="{h(tip)}"><span>{h(b["label"])}</span></div>')
+
+def band_html(b, t0, t1, px, label=True):
+    left, right = int((max(b["start"], t0) - t0) * px), int((min(b["end"], t1) - t0) * px)
+    tip = f'{b["label"]} · {fmt_time(b["start"])} – {fmt_time(b["end"])}'
+    return (f'<div class="tl-band b-{b["kind"]}" style="left:{left}px;width:{max(2, right - left)}px" '
+            f'title="{h(tip)}">' + (f'<span>{h(b["label"])}</span>' if label else "") + "</div>")
+
+
+def coming_up(bands, t1):
+    later = sorted((b for b in bands if b["start"] >= t1), key=lambda b: b["start"])
+    if not later:
+        return ""
+    return ('<p class="muted small">Coming up: ' + " · ".join(
+        f'{h(b["label"])}, {h(fmt_time(b["start"]))} – {h(fmt_time(b["end"]))}' for b in later) + "</p>")
+
+
+def timeline_mine(req, now, days, problems):
+    jobs = {j["id"]: j for j in attempt(problems, slurm.my_jobs_since, req.user, days, default=[])}
+    for j in attempt(problems, slurm.my_active_jobs, req.user, default=[]):
+        jobs[j["id"]] = j  # squeue knows when waiting jobs are expected to start
+    t0 = (int(now - days * 86400) // 3600) * 3600
+    bars = [b for b in (timeline_bar(j, now, t0) for j in jobs.values()) if b]
+    dropped = 0
+    if len(bars) > MAX_BARS:
+        bars.sort(key=lambda b: b["start"], reverse=True)
+        dropped, bars = len(bars) - MAX_BARS, bars[:MAX_BARS]
+    bands = timeline_bands(req, problems, now)
+    horizon = max([now + 86400] + [min(b["plan_end"] or b["end"], now + 7 * 86400) for b in bars]
+                  + [min(b["end"], now + 7 * 86400) for b in bands if b["start"] < now + 7 * 86400])
+    t1 = (int(horizon) // 3600 + 1) * 3600
+    px = PX_PER_HOUR / 3600.0
+    width = int((t1 - t0) * px)
+    height = max(360, pack_lanes(bars, px) * LANE + 24)
+    axis, majors = time_axis(t0, t1, px)
+
+    items = [band_html(b, t0, t1, px) for b in sorted(bands, key=lambda b: b["start"]) if b["start"] < t1]
     for b in bars:
         j = b["job"]
         left = int((b["start"] - t0) * px)
@@ -702,46 +743,206 @@ def timeline(req):
                      f'<span>{h(j["id"])} {h(j["name"])}</span></a>')
     x_now = int((now - t0) * px)
     chart = (f'<div class="timeline" data-now-x="{x_now}"><div class="tl-inner" style="width:{width}px">'
-             f'<div class="tl-head"><div class="tl-days">{"".join(days)}</div><div class="tl-hours">'
-             f'{"".join(h_ for h_ in hours if h_.startswith("<span"))}</div></div>'
-             f'<div class="tl-body" style="height:{height}px">{"".join(h_ for h_ in hours if h_.startswith("<div"))}'
-             f'{"".join(items)}</div><div class="tl-now" style="left:{x_now}px"></div></div></div>')
+             f'<div class="tl-head">{axis}</div>'
+             f'<div class="tl-body" style="height:{height}px">{majors}{"".join(items)}</div>'
+             f'<div class="tl-now" style="left:{x_now}px"></div></div></div>')
     legend = ('<p class="legend muted small"><span class="key k-run"></span>running <span class="key k-wait"></span>'
               'waiting (estimated start) <span class="key k-done"></span>completed <span class="key k-bad"></span>'
               'failed, timed out or out of memory <span class="key k-muted"></span>cancelled</p>')
     legend += ('<p class="legend muted small"><span class="key b-res"></span>your reservation <span class="key b-req">'
                '</span>your request, waiting for an admin <span class="key b-maint"></span>maintenance (no jobs) · '
                f'<a href="{link(req, "/reservations")}">Reservations</a></p>')
-    later = sorted((b for b in bands if b["start"] >= t1), key=lambda b: b["start"])
-    if later:
-        legend += ('<p class="muted small">Coming up: ' + " · ".join(
-            f'{h(b["label"])}, {h(fmt_time(b["start"]))} – {h(fmt_time(b["end"]))}' for b in later) + "</p>")
+    legend += coming_up(bands, t1)
     if dropped:
         legend += f'<p class="muted small">Showing your {MAX_BARS} most recent jobs; {dropped} older ones are left out.</p>'
-    body = "".join([
-        head("My timeline", "Your jobs over the last 7 days. Waiting jobs are shown striped at their estimated start; "
-                            "your reservations, waiting requests and maintenance days are shaded behind them."),
-        problems_notice(problems), chart, legend,
-    ])
-    return page(req, "timeline", "My timeline", body)
+    return chart + legend
+
+
+def bar_details(j, b, now):
+    """What a click on a bar of the All nodes view shows (portal.js), as a title and rows."""
+    rows = [("User", j["user"]), ("State", b["label"])]
+    if b["kind"] == "wait":
+        why = slurm.reason_text(j["reason"])
+        if why:
+            rows.append(("Why waiting", why))
+        if j.get("sched_nodes"):
+            rows.append(("Planned node", j["sched_nodes"]))
+    else:
+        rows.append(("Node", j["nodes"] or "—"))
+    rows += [("CPUs", str(j["cpus"] or "—")), ("Memory", fmt_mb(j["mem_mb"]))]
+    if b["kind"] == "wait":
+        rows.append(("Estimated start", fmt_time(j["start"]) if j["start"] and j["start"] > now else "not known yet"))
+        rows.append(("Time limit", fmt_minutes(j["time_limit"])))
+    elif b["kind"] == "run":
+        rows.append(("Started", fmt_time(j["start"])))
+        rows.append(("Ends at the latest", fmt_time(b["plan_end"]) if b["plan_end"] else "no time limit"))
+    else:
+        rows += [("Started", fmt_time(j["start"])), ("Ended", fmt_time(j["end"])),
+                 ("Run time", fmt_duration(j["elapsed"]) if j["elapsed"] is not None else "—")]
+    return {"title": f'{j["id"]} {j["name"]}', "rows": rows}
+
+
+def timeline_all(req, now, days, problems):
+    t0 = (int(now - days * 86400) // 3600) * 3600
+    nodes = attempt(problems, slurm.nodes, default=[])
+    jobs = {j["id"]: j for j in attempt(problems, slurm.all_jobs_since, days, default=[])}
+    for j in attempt(problems, slurm.all_active_jobs, default=[]):
+        jobs[j["id"]] = j
+    bars = [b for b in (timeline_bar(j, now, t0) for j in jobs.values()) if b]
+    dropped = 0
+    if len(bars) > MAX_BARS:
+        bars.sort(key=lambda b: b["start"], reverse=True)
+        dropped, bars = len(bars) - MAX_BARS, bars[:MAX_BARS]
+    bands = timeline_bands(req, problems, now, mine=False)
+    ahead = now + 2 * 86400   # long jobs run on past the chart's end; a bar's details give its end
+    horizon = max([now + 86400] + [min(b["plan_end"] or b["end"], ahead) for b in bars]
+                  + [min(b["end"], ahead) for b in bands if b["start"] < ahead])
+    t1 = (int(horizon) // 3600 + 1) * 3600
+    px = PX_PER_HOUR / 3600.0
+    width = int((t1 - t0) * px)
+    axis, majors = time_axis(t0, t1, px)
+
+    # rows: each node's running jobs and the waiting jobs planned there, waiting jobs without a node, then each node's
+    # finished jobs (a job on several nodes shows on each)
+    current = {n["name"]: [] for n in nodes}
+    finished = {n["name"]: [] for n in nodes}
+    waiting = []
+    for b in bars:
+        j = b["job"]
+        if b["kind"] == "wait":
+            where, rows = slurm.hostnames(j.get("sched_nodes")), current
+        else:
+            where, rows = slurm.hostnames(j["nodes"]), current if b["kind"] == "run" else finished
+        if not where:
+            waiting.append(b)
+        for name in where:
+            rows.setdefault(name, []).append(dict(b))
+    size = {n["name"]: f'{n["cpus"]} CPUs' for n in nodes}
+    groups = [(name, size.get(name, ""), rows) for name, rows in current.items()]
+    if waiting:
+        groups.append(("Waiting", "no node yet", waiting))
+    groups += [(name, "finished", rows) for name, rows in finished.items() if rows]
+
+    out = []
+    bands = sorted(bands, key=lambda b: b["start"])
+    for i, (name, sub, rows) in enumerate(groups):
+        lanes = pack_lanes(rows, px)
+        items = [band_html(b, t0, t1, px, label=i == 0) for b in bands if b["start"] < t1]
+        for b in rows:
+            j = b["job"]
+            colour = user_colour(j["user"])
+            left = int((b["start"] - t0) * px)
+            w = max(4, int((min(b["end"], t1) - b["start"]) * px))
+            top = 6 + b["lane"] * LANE
+            if b["plan_end"] and b["plan_end"] > b["end"]:
+                pw = int((min(b["plan_end"], t1) - b["end"]) * px)
+                items.append(f'<div class="tl-plan u" style="left:{left + w}px;width:{pw}px;top:{top}px;--uc:{colour}">'
+                             "</div>")
+            kind = b["kind"] if b["kind"] in ("run", "wait") else "fin"
+            details = bar_details(j, b, now)
+            title = details["title"] + " · " + " · ".join(f"{k}: {v}" for k, v in details["rows"])
+            if j["user"] == req.user:
+                details["href"] = req.base + "/job/" + j["id"]
+            attrs = (f'class="tl-bar u k-{kind}" style="left:{left}px;width:{w}px;top:{top}px;--uc:{colour}" '
+                     f'title="{h(title)}" data-tip="{h(json.dumps(details))}"')
+            text = f'<span>{h(j["user"])} {h(plural(j["cpus"], "CPU") if j["cpus"] else "? CPUs")}</span>'
+            items.append(f'<a {attrs} href="{link(req, "/job/" + j["id"])}">{text}</a>' if j["user"] == req.user else
+                         f'<span {attrs} tabindex="0" role="button">{text}</span>')
+        out.append(f'<div class="tl-row"><div class="tl-label"><b>{h(name)}</b><span>{h(sub)}</span></div>'
+                   f'<div class="tl-track" style="width:{width}px;height:{max(1, lanes) * LANE + 12}px">{majors}'
+                   f'{"".join(items)}</div></div>')
+    x_now = int((now - t0) * px)
+    chart = (f'<div class="timeline tl-all" data-now-x="{x_now + TL_LABEL}"><div class="tl-inner" '
+             f'style="width:{width + TL_LABEL}px"><div class="tl-row tl-head-row"><div class="tl-label"></div>'
+             f'<div class="tl-head" style="width:{width}px">{axis}</div></div>{"".join(out)}'
+             f'<div class="tl-now" style="left:{x_now + TL_LABEL}px"></div></div></div>')
+    legend = ('<p class="legend muted small">Colour = user · <span class="key k-run-key"></span>running, then '
+              '<span class="key k-plan-key"></span>up to its time limit <span class="key k-wait-key"></span>waiting '
+              '(estimated start) <span class="key k-fin-key"></span>finished <span class="key b-maint"></span>maintenance '
+              f'(no jobs) · <a href="{link(req, "/cluster")}">Cluster status</a> lists the running jobs</p>')
+    legend += coming_up(bands, t1)
+    if dropped:
+        legend += f'<p class="muted small">Showing the {MAX_BARS} most recent jobs; {dropped} older ones are left out.</p>'
+    return chart + legend
+
+
+def timeline(req):
+    now = time.time()
+    problems = []
+    view = "mine" if req.arg("view") == "mine" else "all"
+    ranges = {k: d for k, _, d in RANGES}
+    chosen = req.arg("range") if req.arg("range") in ranges else ""
+    rng = chosen or ("7d" if view == "mine" else "48h")
+    days = ranges[rng]
+    period = dict((k, label) for k, label, _ in RANGES)[rng]
+    if view == "mine":
+        chart = timeline_mine(req, now, days, problems)
+        sub = (f"My jobs, {h(period)}. Waiting jobs are shown striped at their estimated start; your reservations, "
+               "waiting requests and maintenance days are shaded behind them. Click a bar to open the job.")
+    else:
+        chart = timeline_all(req, now, days, problems)
+        sub = ("All nodes: who runs what and until when (colour = user, label = CPUs). Striped = waiting (estimated "
+               "start). Click a bar for details.")
+    keep = "&range=" + chosen if chosen else ""   # the tabs keep a period the user chose
+    tabs = "".join(f'<a class="tab{" active" if v == view else ""}" href="{link(req, "/timeline?view=" + v + keep)}"'
+                   + (' aria-current="page"' if v == view else "") + f">{h(label)}</a>" for v, label in VIEWS)
+    options = "".join(f'<option value="{k}"{" selected" if k == rng else ""}>{h(label)}</option>'
+                      for k, label, _ in RANGES)
+    controls = (f'<div class="tl-controls"><div class="tabs">{tabs}</div><form method="get" '
+                f'action="{link(req, "/timeline")}"><input type="hidden" name="view" value="{view}"><select name="range" '
+                f'data-autosubmit aria-label="Period">{options}</select><noscript><button class="btn">Show</button>'
+                "</noscript></form></div>")
+    body = head("Timeline", sub, controls) + problems_notice(problems) + chart
+    return page(req, "timeline", "Timeline", body)
 
 
 # ---------------------------------------------------------------------------------------------------- cluster
 
+def job_name_cell(req, j):
+    text = f'<span class="mono">{h(j["id"])}</span> {h(j["name"])}'
+    return f'<a href="{link(req, "/job/" + j["id"])}">{text}</a>' if j["user"] == req.user else text
+
+
+def ends_cell(j, now):
+    if not j["time_limit"] or not j["end"]:
+        return '<span class="muted">no time limit</span>'
+    when = f'<span class="muted">({h(fmt_time(j["end"]))})</span>'
+    return f"in {h(fmt_duration(j['end'] - now))} {when}" if j["end"] > now else f"now {when}"
+
+
+def user_meter(parts, total, other=0):
+    """A node's CPUs in use, one coloured part per user (and grey for jobs squeue does not list here)."""
+    segs = [(u, c, user_colour(u)) for u, c in parts] + ([("other jobs", other, "var(--faint)")] if other > 0 else [])
+    out = [f'<div class="seg" style="width:{min(c / total, 1) * 100:.2f}%;--uc:{colour}" '
+           f'title="{h(u)}: {h(plural(c, "CPU"))}"></div>' for u, c, colour in segs if c and total]
+    return '<div class="meter by-user">' + "".join(out) + "</div>"
+
+
 def cluster(req):
     problems = []
     nodes = attempt(problems, slurm.nodes, default=[])
-    running, waiting = attempt(problems, slurm.queue_counts, default=(0, 0))
+    jobs = attempt(problems, slurm.all_active_jobs, default=[])
+    now = time.time()
+    running = sorted((j for j in jobs if j["state"] in slurm.RUNNING_STATES),
+                     key=lambda j: (j["end"] if j["time_limit"] and j["end"] else math.inf, j["job_id"] or 0))
+    waiting = sorted((j for j in jobs if j["state"] == "PENDING"),
+                     key=lambda j: (j["start"] if j["start"] and j["start"] > now else math.inf, j["job_id"] or 0))
     up = [n for n in nodes if n["available"]]
-    free = sum(n["cpus_free"] for n in up)
-    total = sum(n["cpus"] for n in nodes)
-    idle = sum(1 for n in up if n["cpus_alloc"] == 0)
+    est = [j["start"] for j in waiting if j["start"] and j["start"] > now]
+    people = {j["user"] for j in running}
     cards = "".join([
-        stat_card("Free CPUs", str(free), f"of {total}", "cpu"),
-        stat_card("Idle nodes", str(idle), f"of {len(nodes)}", "grid"),
-        stat_card("Running jobs", str(running), "&nbsp;", "list"),
-        stat_card("Waiting jobs", str(waiting), "no queue" if not waiting else "in the queue", "clock"),
+        stat_card("Free CPUs", str(sum(n["cpus_free"] for n in up)), f"of {sum(n['cpus'] for n in nodes)}", "cpu"),
+        stat_card("Free memory", h(fmt_mb(sum(n["mem_free_mb"] for n in up))),
+                  f"of {h(fmt_mb(sum(n['mem_mb'] for n in nodes)))}", "memory"),
+        stat_card("Running jobs", str(len(running)), f"by {plural(len(people), 'user')}" if running else "&nbsp;",
+                  "list"),
+        stat_card("Waiting jobs", str(len(waiting)), "no queue" if not waiting else
+                  f"next start est. {h(fmt_time(min(est)))}" if est else "no start estimate yet", "clock"),
     ])
+    per_node = collections.defaultdict(collections.Counter)
+    for j in running:
+        for name in slurm.hostnames(j["nodes"]):
+            per_node[name][j["user"]] += slurm.cpus_on(j, name)
     node_cards = []
     for n in nodes:
         busy = f"{n['load'] / n['threads'] * 100:.0f}% busy" if n["load"] is not None and n["threads"] else ""
@@ -751,22 +952,42 @@ def cluster(req):
             tags.append(f'<span class="bad">{h(state)}</span>')
         elif n["cpus_alloc"] == 0:
             tags.append("idle")
+        users = sorted(per_node[n["name"]].items(), key=lambda x: (-x[1], x[0]))
+        chips = "".join(chip(u, plural(c, "CPU")) for u, c in users) or '<span class="muted">no jobs</span>'
         node_cards.append(
             f'<div class="card node"><div class="node-head"><span><b>{h(n["name"])}</b> · {n["cpus"]} CPUs</span>'
             f'<span class="muted">{h(busy)}</span></div>'
-            f'{meter(n["cpus_alloc"] / n["cpus"] if n["cpus"] else 0)}'
+            f'{user_meter(users, n["cpus"], n["cpus_alloc"] - sum(c for _, c in users))}'
             f'<div class="node-text">{n["cpus_free"]} of {n["cpus"]} CPUs free</div>'
             f'{meter(n["mem_alloc_mb"] / n["mem_mb"] if n["mem_mb"] else 0, "mem")}'
             f'<div class="node-text">{h(fmt_mb(n["mem_free_mb"]))} free of {h(fmt_mb(n["mem_mb"]))}'
-            f'{" · " + " · ".join(t if t.startswith("<") else h(t) for t in tags) if tags else ""}</div></div>')
-    from .adminpriority import public_card   # adminpriority imports this module
-    priority = public_card(req, problems)
+            f'{" · " + " · ".join(t if t.startswith("<") else h(t) for t in tags) if tags else ""}</div>'
+            f'<div class="chips">{chips}</div></div>')
+
+    rows = "".join(
+        f'<tr><td>{chip(j["user"])}</td><td class="name">{job_name_cell(req, j)}</td><td>{h(j["nodes"] or "—")}</td>'
+        f'<td>{h(j["cpus"] or "—")}</td><td>{h(fmt_mb(j["mem_mb"]))}</td><td>{h(fmt_time(j["start"]))}</td>'
+        f'<td>{ends_cell(j, now)}</td></tr>' for j in running)
+    run_table = ('<div class="table-wrap"><table class="table"><thead><tr><th>User</th><th>Job</th><th>Node</th>'
+                 '<th>CPUs</th><th>Memory</th><th>Started</th><th>Ends</th></tr></thead><tbody>' + rows
+                 + "</tbody></table></div>") if running else empty("No jobs are running.")
+    rows = "".join(
+        f'<tr><td>{chip(j["user"])}</td><td class="name">{job_name_cell(req, j)}</td><td>{h(j["cpus"] or "—")}</td>'
+        f'<td>{h(fmt_mb(j["mem_mb"]))}</td><td>{h(fmt_minutes(j["time_limit"]))}</td>'
+        f'<td class="name">{h(slurm.reason_text(j["reason"]) or "waiting")}</td><td>'
+        + (h(fmt_time(j["start"])) if j["start"] and j["start"] > now else '<span class="muted">not known yet</span>')
+        + "</td></tr>" for j in waiting)
+    wait_table = card("Waiting jobs (next to start first)", (
+        '<div class="table-wrap"><table class="table"><thead><tr><th>User</th><th>Job</th><th>CPUs</th><th>Memory</th>'
+        '<th>Time limit</th><th>Why waiting</th><th>Est. start</th></tr></thead><tbody>' + rows
+        + "</tbody></table></div>"), "flush-head") if waiting else ""
     inner = (problems_notice(problems) + f'<div class="grid stats">{cards}</div>'
-             f'<div class="grid nodes">{"".join(node_cards)}</div>' + priority)
+             f'<div class="grid nodes">{"".join(node_cards)}</div>'
+             + card("Running jobs (ending soonest first)", run_table, "flush-head") + wait_table)
     if req.partial:
         return inner
-    body = (head("Cluster status", "Free CPUs and memory on every node, who has priority and which CPUs are reserved. "
-                                   "Updated every 5 seconds.")
+    body = (head("Cluster status", "Free CPUs and memory, who uses each node and when their jobs end. Updated every 5 "
+                                   "seconds.")
             + f'<div data-refresh="{link(req, "/cluster?partial=1")}" data-interval="5000">{inner}</div>')
     return page(req, "cluster", "Cluster status", body)
 
@@ -910,79 +1131,6 @@ def history_csv(req):
                     [("Content-Disposition", f'attachment; filename="{name}"')])
 
 
-# ---------------------------------------------------------------------------------------------------- test runs
-
-def _quick_jobs(req, problems):
-    active = [j for j in attempt(problems, slurm.my_active_jobs, req.user, default=[])
-              if j["partition"] == slurm.DEBUG_PARTITION]
-    recent = [j for j in attempt(problems, slurm.my_jobs_since, req.user, 1, default=[])
-              if j["partition"] == slurm.DEBUG_PARTITION and not j["active"]]
-    recent.sort(key=lambda j: j["job_id"] or 0, reverse=True)
-    return active, recent[:10]
-
-
-def tests(req, values=None, message=""):
-    problems = []
-    quick = slurm.debug_partition()
-    active, recent = _quick_jobs(req, problems)
-    active_html = jobs_table(req, active) if active else empty("No test runs right now.")
-    if req.partial:
-        return active_html
-    v = {"cpus": "1", "workdir": req.home}
-    v.update(values or {})
-    if not quick:
-        body = "".join([head("Test runs", "Quick test jobs."),
-                        notice("info", "Quick test jobs are not set up on this cluster yet.")])
-        return page(req, "tests", "Test runs", body)
-    mins = quick["max_time"] or 10
-    limits = (f"up to {mins} minutes" if mins < 60 else f"up to {h(fmt_minutes(mins))}") + \
-        f", {h(quick.get('max_cpus_per_node') or '?')} CPUs and {h(fmt_mb(quick.get('max_mem_per_node')))}"
-    info = notice("info", "Start a quick test in a terminal: <code class=\"inline\">sbatch -p debug --wrap "
-                  "'python test.py'</code> (" + limits + "; it starts before other jobs). An interactive shell for "
-                  "the same time: <code class=\"inline\">srun -p debug --pty bash</code>. For longer interactive "
-                  "work use a normal job, e.g. <code class=\"inline\">srun -t 2:00:00 --pty bash</code> (cancelled "
-                  "after 60 idle minutes).")
-    max_cpus = quick.get("max_cpus_per_node") or 4
-    cpu_options = "".join(f'<option value="{n}"{" selected" if str(n) == str(v.get("cpus")) else ""}>{n}</option>'
-                          for n in range(1, int(max_cpus) + 1))
-    form = (f'<form class="card" method="post" action="{link(req, "/tests")}"><div class="card-head">Run a quick test'
-            '</div><div class="form-grid quick-grid">'
-            f'<div class="field"><label for="q-cpus">CPUs</label><select id="q-cpus" name="cpus">{cpu_options}</select>'
-            f'<div class="hint">{limits}</div></div>'
-            f'<div class="field wide2"><label for="q-workdir">Working directory</label><input id="q-workdir" '
-            f'name="workdir" value="{h(v.get("workdir", ""))}" autocomplete="off" spellcheck="false"></div></div>'
-            f'<div class="field wide"><label for="q-command">Command</label><textarea id="q-command" name="command" '
-            f'rows="2" spellcheck="false" placeholder="python test.py">{h(v.get("command", ""))}</textarea></div>'
-            f'<div class="form-actions"><button class="btn btn-primary" type="submit">{icon("flask")}Run test'
-            '</button></div></form>')
-    body = "".join([
-        head("Test runs", f"Quick test jobs: {limits}. Scheduled before other jobs, so they start as soon as CPUs "
-             "are free."),
-        problems_notice(problems), notice("error", h(message)) if message else "", info,
-        '<div class="stack">', form,
-        card("", f'<div data-refresh="{link(req, "/tests?partial=1")}" data-interval="10000">{active_html}</div>',
-             "flush"),
-        card("Finished in the last 24 hours", jobs_table(req, recent), "flush-head") if recent else "",
-        "</div>",
-    ])
-    return page(req, "tests", "Test runs", body)
-
-
-def tests_post(req):
-    problems = []
-    nodes, part, envs = _form_context(req, problems)
-    values = {"cpus": req.form.get("cpus", "1"), "workdir": req.form.get("workdir", ""),
-              "command": req.form.get("command", ""), "quick": "1", "node": "any"}
-    spec, errors = jobform.parse(values, req.home, nodes, part, envs)
-    if errors:
-        return tests(req, values, " ".join(errors.values()))
-    try:
-        job_id = slurm.submit(jobform.script(spec, req.home, req.user))
-    except slurm.SlurmError as e:
-        return tests(req, values, str(e))
-    return redirect(req.base + f"/job/{job_id}?submitted=1")
-
-
 # ---------------------------------------------------------------------------------------------------- account
 
 EVENT_LABELS = [("done", "Job finished successfully"),
@@ -990,7 +1138,8 @@ EVENT_LABELS = [("done", "Job finished successfully"),
                 ("idle", "Idle warning (15 minutes before) and cancellation by the idle check"),
                 ("priority", "An admin gives you priority or reserves CPUs for you (and when it ends), or answers "
                              "your reservation request")]
-ADMIN_EVENT_LABELS = [("requests", "Cluster admins: a member asks for a reservation, or cancels one")]
+ADMIN_EVENT_LABELS = [("requests", "Cluster admins: a member asks for a reservation, or cancels one"),
+                      ("disks", "Cluster admins: a disk problem (a failing or worn disk, a degraded array)")]
 
 
 def account(req, notes="", pw_error="", keys_text=None, key_problems=None):
@@ -1104,6 +1253,11 @@ def account_telegram(req):
             return account(req, notice("error", "Saved, but the test message failed: " + h(test.get("error", ""))))
         return account(req, notice("ok", "Saved. A test message is on its way to your Telegram."))
     return account(req, notice("ok", "Notification settings saved."))
+
+
+def tests_moved(req):
+    """Test runs was a page of its own until 2026-10-27; quick tests are the Quick test box on New job."""
+    return redirect(req.base + "/new")
 
 
 def not_found(req, text="This page does not exist."):

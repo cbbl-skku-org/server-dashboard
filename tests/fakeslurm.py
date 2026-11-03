@@ -21,7 +21,7 @@ UNSET = {"set": False, "infinite": False, "number": 0}
 
 
 def squeue_job(job_id, name, state, cpus, mem_mb, node, start, limit_min, reason="None", array=None, task=None,
-               workdir="/home/alice/esm", user=USER):
+               workdir="/home/alice/esm", user=USER, sched=""):
     return {
         "job_id": job_id, "array_job_id": num(array or 0), "array_task_id": num(task) if task is not None else UNSET,
         "name": name, "user_name": user, "job_state": [state], "state_reason": reason, "cpus": num(cpus),
@@ -32,7 +32,9 @@ def squeue_job(job_id, name, state, cpus, mem_mb, node, start, limit_min, reason
         "end_time": num(int(start + limit_min * 60)) if start else num(0), "nodes": node,
         "current_working_directory": workdir, "command": "(null)", "partition": "cpu", "features": "",
         "required_nodes": "", "standard_output": f"{workdir}/slurm-%j.out", "standard_error": f"{workdir}/slurm-%j.out",
-        "admin_comment": "",
+        "admin_comment": "", "scheduled_nodes": sched,
+        "job_resources": {"nodes": {"allocation": [{"name": node, "cpus": {"count": cpus, "used": 0}}]}}
+        if state == "RUNNING" else {},
     }
 
 
@@ -76,7 +78,7 @@ OTHERS = [
     squeue_job(1301, "assembly", "PENDING", 96, 409600, "", 0, 1440, reason="JobHeldAdmin", user="carol",
                workdir="/home/carol/asm"),
     squeue_job(1302, "qc", "PENDING", 4, 16384, "", NOW + H, 120, reason="Priority", user="carol",
-               workdir="/home/carol/qc"),
+               workdir="/home/carol/qc", sched="node2"),
 ]
 IDLE_NOTE = "Idle check: cancelled 2026-10-24 21:36, under 0.05 CPU for 60 min"
 FINISHED = [
@@ -96,6 +98,12 @@ FINISHED = [
     sacct_job(1120, "msa-build", "COMPLETED", 24, 98304, NOW - 9 * D, 10 * H + 40 * 60, total_cpu=24 * 10 * H, peak=50 * 1024 ** 3),
     sacct_job(1101, "msa-build", "COMPLETED", 24, 98304, NOW - 12 * D, 9 * H, total_cpu=24 * 8 * H),
     sacct_job(1050, "qc-<script>alert(1)</script>", "COMPLETED", 1, 4096, NOW - 20 * D, 3 * 60 + 6, total_cpu=150),
+]
+OTHERS_FINISHED = [
+    sacct_job(1298, "md-prep", "COMPLETED", 12, 49152, NOW - 9 * H, 2 * H, node="node3", user="bob",
+              workdir="/home/bob/md"),
+    sacct_job(1299, "qc-old", "FAILED", 4, 16384, NOW - 6 * H, 15 * 60, node="node[1-2]", user="carol",
+              workdir="/home/carol/qc"),
 ]
 NODES = [
     {"name": "node1", "partitions": ["cpu", "pilot"], "cpus": 96, "effective_cpus": 48, "alloc_cpus": 0,
@@ -161,7 +169,7 @@ def fake_run(args, input_text=None, timeout=None):
                              j["memory_per_node"]["number"], j["start_time"]["number"] if j["job_state"][0] == "RUNNING" else 0,
                              int(NOW - j["start_time"]["number"]) if j["job_state"][0] == "RUNNING" else 0)
                    for j in ACTIVE]
-        return json.dumps({"jobs": FINISHED + running})
+        return json.dumps({"jobs": FINISHED + running + (OTHERS_FINISHED if "-a" in args else [])})
     if cmd == "scontrol" and args[1:3] == ["show", "node"]:
         return json.dumps({"nodes": NODES})
     if cmd == "scontrol" and args[1:3] == ["show", "partition"]:
@@ -323,6 +331,12 @@ HEALTH_REPORT = {"ok": True, "at": NOW, "nodes": {
                         "notify": ["2026-10-25 23:49:03 sent user=alice messages=1"]},
                "slurmctld": {"errors": [], "count": 0, "known": 6}},
 }}
+
+
+# the disk check's report in the health answer ("disks"; a real one of 2026-11-03 with the serial numbers replaced),
+# 2 hours old: every disk with its SMART data and its state in the RAID array, the arrays, the problems found
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "disk-report.json")) as _f:
+    HEALTH_REPORT["disks"] = dict(json.load(_f), at=NOW - 2 * H)
 
 
 def fake_admin_helper(cmd, data=None, timeout=None):
