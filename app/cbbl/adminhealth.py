@@ -213,8 +213,7 @@ DRIVE_STATES = {"Onln": "in the array", "DHS": "hot spare", "GHS": "hot spare", 
                 "Offln": "offline", "UBad": "marked bad", "Rbld": "rebuilding", "Msng": "missing"}
 
 
-# The columns of the Disk health card, with what each means (the headers' tooltips; also LEGEND under the table and
-# disk-health/README.md)
+# The columns of the Disk health card, with what each means (the headers' tooltips)
 COLUMNS = [("Node", ""), ("Disk", "Where the disk sits: nvme0 is the node's system SSD; slot E:S is enclosure E, slot S "
                                   "of the RAID controller"), ("Model", ""),
            ("State", "The disk check's verdict (ok, check = a warning, bad = an alarm) and the disk's role: in the "
@@ -224,19 +223,6 @@ COLUMNS = [("Node", ""), ("Disk", "Where the disk sits: nvme0 is the node's syst
                               "pending or uncorrected sectors or controller media errors"),
            ("Powered on", "The disk's own power-on time: how long it has run, not since it was bought"),
            ("Temp.", "")]
-LEGEND = ('<dl class="disk-legend"><dt>State</dt><dd>The check\'s verdict for the disk: <b>ok</b>, <b>check</b> (a '
-          'warning: look at it soon) or <b>bad</b> (act now; the reason is in the summary at the top). Below it, the '
-          'disk\'s role as the RAID controller reports it: <i>in the array</i>, <i>hot spare</i> (waits, idle, and '
-          'replaces a failed disk by itself), <i>rebuilding</i>, <i>failed</i> …; the SSDs are <i>system disks</i>, '
-          'outside any array.</dd>'
-          '<dt>Wear or errors</dt><dd><b>SSD:</b> how much of its rated write life is used (the SSD\'s own '
-          '“percentage used”: 100 % means the rated life is used up; replace it around then), how many years are left '
-          'at the rate it has worn so far, and how much has been written to it. <b>Hard disk:</b> how many bad spots '
-          '(sectors) it has <i>remapped</i> to spare ones. A few over the years are normal; a count that keeps growing '
-          'means the disk is wearing out. Pending or uncorrected sectors and the controller\'s media errors are shown '
-          'when there are any. An idle hot spare gives no readings.</dd>'
-          '<dt>Powered on</dt><dd>The disk\'s own power-on counter, in years: how long it has been running (not since '
-          'it was bought). Hard disks are flagged after {age} years, the usual warranty of such disks.</dd></dl>')
 
 
 def disk_size(n):
@@ -315,7 +301,7 @@ def disks_card(report, now):
             f'{t.get("hdd_age_warn_years", 5)} years are flagged. Admins get Telegram messages about new problems '
             '(Account page).</p>')
     return card("Disk health", (f'<div class="disk-arrays">{"".join(arrays)}</div>' if arrays else "") + table
-                + LEGEND.replace("{age}", str(t.get("hdd_age_warn_years", 5))) + foot, "flush-head")
+                + foot, "flush-head")
 
 
 def timers_card(report, now):

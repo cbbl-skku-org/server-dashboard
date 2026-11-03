@@ -403,7 +403,4 @@ textarea.keys { min-height: 140px; font-size: 12px; }
 .disk-table th:first-child, .disk-table td:first-child { padding-left: 16px; }
 .disk-table th:last-child, .disk-table td:last-child { padding-right: 16px; }
 .disk-table th[title] { cursor: help; text-decoration: underline dotted; text-underline-offset: 3px; }
-.disk-legend { margin: 0 16px; padding-top: 12px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; }
-.disk-legend dt { font-weight: 600; color: var(--text); }
-.disk-legend dd { margin: 0; }
-@media (max-width: 700px) { .disk-legend { grid-template-columns: 1fr; } .disk-legend dd { margin-bottom: 6px; } }
+@media (max-width: 700px) { 

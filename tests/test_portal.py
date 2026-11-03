@@ -533,10 +533,10 @@ class AdminPages(unittest.TestCase):
             for text in ("Disk health", "slot 251:15", "hot spare", "idle spare: no readings", "15 % worn",
                          "about 4.4 years left", "Samsung SSD 970 EVO Plus 1TB", "WDC WUH722020BL5204",
                          "RAID 6 array of 15 disks + 1 hot spare, 236.469 TB", ">Optimal</span>", "every 6 hours", ">20 TB<", ">1 TB<",
-                         "system disk</div>", "hot spare</div>", "<dt>Wear or errors</dt>", "<dt>Powered on</dt>",
-                         "remapped</i> to spare ones", '<th title="The disk&#x27;s own power-on time'):
+                         "system disk</div>", "hot spare</div>", '<th title="The disk&#x27;s own power-on time'):
                 self.assertIn(text, body)
             self.assertNotIn("Disk:", body)                                       # no disk problems today
+            self.assertNotIn("disk-legend", body)                                 # the explanations: tooltips only
             disks = fakeslurm.HEALTH_REPORT["disks"]
             disks["problems"] = [{"level": "bad", "key": "node3:array:0/239",
                                   "text": "node3: the RAID6 array 0/239 is degraded (a disk is missing: replace it)"},
