@@ -235,6 +235,11 @@ def job_from_squeue(j):
         per_node, per_cpu = num(j.get("memory_per_node")), num(j.get("memory_per_cpu"))
         mem = per_node if per_node else (per_cpu * cpus if per_cpu and cpus else None)
     limit = num(j.get("time_limit"))
+    # CPUs per node (a job may span nodes); squeue lists them in job_resources once the job runs
+    node_cpus = {}
+    for a in ((j.get("job_resources") or {}).get("nodes") or {}).get("allocation") or []:
+        if isinstance(a, dict) and a.get("name"):
+            node_cpus[a["name"]] = num((a.get("cpus") or {}).get("count"), 0) or 0
     job = {
         "id": _display_id(job_id, array_id, task), "job_id": job_id, "array_id": array_id, "task": task,
         "name": j.get("name") or "", "user": j.get("user_name") or "", "state": state,
@@ -248,6 +253,7 @@ def job_from_squeue(j):
         "array_tasks": j.get("array_task_string") or "" if task is None and array_id else "",
         "elapsed": None, "total_cpu": None, "max_rss": None, "script": None, "submit_line": "",
         "admin_note": j.get("admin_comment") or "",
+        "node_cpus": node_cpus, "sched_nodes": j.get("scheduled_nodes") or "",   # where a waiting job should start
     }
     job["stdout"] = expand_path(j.get("standard_output"), job)
     job["stderr"] = expand_path(j.get("standard_error"), job)
@@ -322,6 +328,21 @@ def my_jobs_since(user, days):
     """All of the user's jobs active at some point in the last `days` days (one line per job, no steps)."""
     data = run_json(["sacct", "-u", user, "-X", "-S", _since(days), "-E", "now"], timeout=40)
     return [job_from_sacct(j) for j in data.get("jobs") or []]
+
+
+def all_jobs_since(days):
+    """Every user's jobs active at some point in the last `days` days (the Timeline's All nodes view). Users see
+    other people's jobs only if Slurm's PrivateData does not include jobs (the default)."""
+    data = run_json(["sacct", "-a", "-X", "-S", _since(days), "-E", "now"], timeout=40)
+    return [job_from_sacct(j) for j in data.get("jobs") or []]
+
+
+def cpus_on(job, node):
+    """The job's CPUs on one node: squeue's allocation, else an even share of its CPUs."""
+    if job.get("node_cpus", {}).get(node):
+        return job["node_cpus"][node]
+    names = hostnames(job["nodes"])
+    return (job["cpus"] or 0) // max(len(names), 1) if node in names else 0
 
 
 JOB_ID_RE = re.compile(r"^\d{1,10}(_\d{1,7})?$")

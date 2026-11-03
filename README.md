@@ -5,10 +5,12 @@ their jobs without a terminal; cluster admins get pages for every job, the nodes
 It runs as an [Open OnDemand](https://openondemand.org/) system app and replaces Open OnDemand's own pages.
 
 - **Pages for everyone:** Overview, My jobs (with a page per job: live output, CPU and memory use, cancel), New job
-  (a form that builds the batch script and shows the equivalent `sbatch` command), My timeline (with their
-  reservations and maintenance days), Cluster status (also who has priority and every reservation), Reservations
-  (ask the admins to keep CPUs for a deadline, within per-member limits; cancel their own), Test runs (quick jobs in a
-  debug partition), History & stats (with CSV export) and Account (password, SSH keys, Telegram notifications).
+  (a form that builds the batch script and shows the equivalent `sbatch` command; a Quick test box for a debug
+  partition), Timeline (All nodes: everyone's jobs per node, one colour per member, click a bar for details; My jobs:
+  their own, with their reservations and maintenance days), Cluster status (who uses each node, running jobs ending
+  soonest first, waiting jobs), Reservations (ask the admins to keep CPUs for a deadline, within per-member limits;
+  cancel their own; who has priority and every reservation), History & stats (with CSV export) and Account (password,
+  SSH keys, Telegram notifications).
 - **Pages for cluster admins** (members of one Unix group): Health (routine checks of every node, with each
   node's Slurm state and drain/resume), All jobs (cancel, hold, release, requeue with a note the user sees), Users
   (add, reset password, lock, unlock), Priority (put a waiting job or a member first, reserve CPUs, each for a while
@@ -94,7 +96,7 @@ Updating is copying `app/` again: each user's server reloads it within about 10 
 | `app/cbbl/jobform.py` | New job: checks, batch script, equivalent command |
 | `app/cbbl/account.py` | Account: SSH keys (written as the user), the account helper |
 | `app/cbbl/admin.py`, `adminviews.py`, `adminhealth.py` | who is an admin, the admin helper, the admin pages |
-| `app/cbbl/adminpriority.py`, `reservations.py` | the Priority page and Cluster status's list; the users' Reservations page |
+| `app/cbbl/adminpriority.py`, `reservations.py` | the Priority page and the list of priority and reservations; the users' Reservations page |
 | `app/public/static/` | CSS, JavaScript, icon |
 | `login/login.html` | the sign-in page (static, served by Apache) |
 

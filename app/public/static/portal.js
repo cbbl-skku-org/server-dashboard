@@ -117,6 +117,60 @@
   var tl = document.querySelector(".timeline[data-now-x]");
   if (tl) tl.scrollLeft = Math.max(0, parseInt(tl.getAttribute("data-now-x"), 10) - tl.clientWidth * 0.55);
 
+  // Timeline, All nodes: a click on a bar shows its details (the bar's title says the same without JavaScript)
+  var pop = null;
+  var closePop = function () { if (pop) { pop.remove(); pop = null; } };
+  var showPop = function (bar, x) {
+    var d;
+    try { d = JSON.parse(bar.getAttribute("data-tip")); } catch (err) { return; }
+    closePop();
+    pop = document.createElement("div");
+    pop.className = "tl-pop";
+    pop.setAttribute("role", "dialog");
+    var title = document.createElement("div");
+    title.className = "tl-pop-title";
+    title.textContent = d.title;
+    pop.appendChild(title);
+    var dl = document.createElement("dl");
+    dl.className = "kv";
+    d.rows.forEach(function (row) {
+      var dt = document.createElement("dt");
+      var dd = document.createElement("dd");
+      dt.textContent = row[0];
+      dd.textContent = row[1];
+      dl.appendChild(dt);
+      dl.appendChild(dd);
+    });
+    pop.appendChild(dl);
+    if (d.href) {
+      var open = document.createElement("a");
+      open.className = "btn btn-sm";
+      open.href = d.href;
+      open.textContent = "Open job page";
+      pop.appendChild(open);
+    }
+    document.body.appendChild(pop);
+    var r = bar.getBoundingClientRect();
+    var left = Math.min(Math.max(8, (x === undefined ? r.left : x) - 20), window.innerWidth - pop.offsetWidth - 8);
+    var top = r.bottom + 6;
+    if (top + pop.offsetHeight > window.innerHeight - 8) top = Math.max(8, r.top - pop.offsetHeight - 6);
+    pop.style.left = left + "px";
+    pop.style.top = top + "px";
+  };
+  document.querySelectorAll(".tl-bar[data-tip]").forEach(function (b) { b.removeAttribute("title"); });
+  document.addEventListener("click", function (e) {
+    var bar = e.target.closest(".tl-bar[data-tip]");
+    if (bar) { e.preventDefault(); showPop(bar, e.clientX); }
+    else if (pop && !e.target.closest(".tl-pop")) closePop();
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape") { closePop(); return; }
+    var bar = e.target.closest && e.target.closest(".tl-bar[data-tip]");
+    if (bar && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); showPop(bar); }
+  });
+  window.addEventListener("scroll", closePop, true);   // also the timeline's sideways scroll
+  window.addEventListener("resize", closePop);
+
   // New job: live equivalent command, field checks and script preview
   var form = document.querySelector("form[data-preview-url]");
   if (form) {
