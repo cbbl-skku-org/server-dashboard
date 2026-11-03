@@ -394,3 +394,13 @@ textarea.keys { min-height: 140px; font-size: 12px; }
   .tl-controls { align-items: flex-start; }
   .job-form .form-grid, .quick-grid { grid-template-columns: minmax(0, 1fr); }
 }
+
+.disk-arrays { padding: 12px 16px 8px; line-height: 1.5; }
+.disk-array { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 3px 0; }
+.disk-array-node { min-width: 76px; font-weight: 600; }
+.disk-table td { vertical-align: top; }
+.disk-table td .badge { margin-top: 1px; }
+.disk-table th:first-child, .disk-table td:first-child { padding-left: 16px; }
+.disk-table th:last-child, .disk-table td:last-child { padding-right: 16px; }
+.disk-table th[title] { cursor: help; text-decoration: underline dotted; text-underline-offset: 3px; }
+@media (max-width: 700px) { 

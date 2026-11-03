@@ -12,7 +12,7 @@ It runs as an [Open OnDemand](https://openondemand.org/) system app and replaces
   cancel their own; who has priority and every reservation), History & stats (with CSV export) and Account (password,
   SSH keys, Telegram notifications).
 - **Pages for cluster admins** (members of one Unix group): Health (routine checks of every node, with each
-  node's Slurm state and drain/resume), All jobs (cancel, hold, release, requeue with a note the user sees), Users
+  node's Slurm state and drain/resume; optionally every disk's health: SSD wear, array disks' errors and states), All jobs (cancel, hold, release, requeue with a note the user sees), Users
   (add, reset password, lock, unlock), Priority (put a waiting job or a member first, reserve CPUs, each for a while
   or a member also permanently; approve or decline members' reservation requests) and Admin log. Everyone else gets
   "not found".
@@ -62,6 +62,9 @@ browser ──HTTPS──▶ Apache (Open OnDemand front end)
 - Two things need root, and go through `sudo` to small helper programs (not part of this repository): the account
   helper (password on every node, Telegram settings) and the admin helper (accounts, the health report, the admin
   log, priority changes and reservation requests; a root timer of yours should undo expired priority changes).
+  For the Health page's "Disk health" card, the health answer may carry a disk check's report (`"disks"`; a root job
+  of yours reading smartctl and the RAID tool; format: `tests/data/disk-report.json`) and `health.disk_check` is set
+  to `true` in the config.
   Every user may run the admin helper's four request commands (`request`, `request-withdraw`, `request-cancel`,
   `requests-mine`) for their own requests; the rest is for the admin group. Each gets one command as its argument and JSON on stdin, and prints a JSON object as its last line of output.
   The commands and answers the portal expects are in `fake_helper` and `fake_admin_helper` in `tests/fakeslurm.py`.

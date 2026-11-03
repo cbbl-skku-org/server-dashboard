@@ -21,6 +21,7 @@ DISK_WARN, DISK_BAD = _H["disk_warn"], _H["disk_bad"]
 CLOCK_WARN, CLOCK_BAD = _H["clock_warn"], _H["clock_bad"]
 MEM_WARN = _H["mem_warn"]
 IDLE_STALE = _H["idle_stale"]
+DISK_CHECK, DISKS_STALE = _H["disk_check"], _H["disks_stale"]
 BACKUP_MAX_AGE, BACKUP_LONG_RUN = _H["backup_max_age"], _H["backup_long_run"]
 # timer: (name on the page, schedule, a last run older than this is a problem)
 TIMERS = {name: tuple(t) for name, t in _H["timers"].items()}
@@ -110,6 +111,14 @@ def find_problems(report, nodes, idle, now):
                         f"Slurm: {n['name']} is {state}" + (f" ({n['reason']})" if n["reason"] else "")))
     for text in (report.get("priority") or {}).get("problems") or []:
         out.append(("warn", f"Priority change not undone: {text}"))
+    disks = report.get("disks")
+    if disks is None:
+        if DISK_CHECK:
+            out.append(("warn", "The disk check has no report yet"))
+    else:
+        if now - (disks.get("at") or 0) > DISKS_STALE:
+            out.append(("warn", f"The disk check last ran {ago(now, disks.get('at'))}"))
+        out += [(p["level"], "Disk: " + p["text"]) for p in disks.get("problems") or []]
     if idle is None:
         out.append(("bad", "The idle check's status file is missing"))
     elif now - (idle.get("updated") or 0) > IDLE_STALE:
@@ -196,6 +205,103 @@ def node_card(req, name, d, n, here, now):
             f'<div class="section-title spaced">Disks</div>{disks}'
             f'<div class="section-title">Services</div><div class="badges">{services}</div>'
             f'<div class="section-title spaced">Mounts</div><div class="badges">{mounts or "—"}</div>{action}</div>')
+
+
+RAID_STATES = {"Optl": "Optimal", "Dgrd": "Degraded", "Pdgd": "Partly degraded", "Rbld": "Rebuilding",
+               "OfLn": "Offline"}
+DRIVE_STATES = {"Onln": "in the array", "DHS": "hot spare", "GHS": "hot spare", "UGood": "unused", "Failed": "failed",
+                "Offln": "offline", "UBad": "marked bad", "Rbld": "rebuilding", "Msng": "missing"}
+
+
+# The columns of the Disk health card, with what each means (the headers' tooltips)
+COLUMNS = [("Node", ""), ("Disk", "Where the disk sits: nvme0 is the node's system SSD; slot E:S is enclosure E, slot S "
+                                  "of the RAID controller"), ("Model", ""),
+           ("State", "The disk check's verdict (ok, check = a warning, bad = an alarm) and the disk's role: in the "
+                     "array, hot spare, rebuilding, failed …, or system disk"),
+           ("Wear or errors", "SSD: share of its rated write life used, years left at its rate so far, data written. "
+                              "Hard disk: sectors it has remapped (a growing count means it is wearing out), and any "
+                              "pending or uncorrected sectors or controller media errors"),
+           ("Powered on", "The disk's own power-on time: how long it has run, not since it was bought"),
+           ("Temp.", "")]
+
+
+def disk_size(n):
+    """Bytes in the disk makers' decimal units, as on the label: 22 TB, 1 TB, 960 GB."""
+    return f"{n / 1e12:.0f} TB" if n >= 0.95e12 else f"{n / 1e9:.0f} GB"
+
+
+def disk_rows(node, d, levels):
+    rows = []
+    for x in d.get("disks") or []:
+        r = x.get("raid") or {}
+        where = f"slot {r['slot']}" if r else (x.get("dev") or "").removeprefix("/dev/")
+        level = levels.get(f"{node}:{x.get('serial') or x.get('type')}")
+        state = badge("bad" if level == "bad" else "check" if level == "warn" else "ok",
+                      "bad" if level == "bad" else "wait" if level == "warn" else "ok")
+        state += f'<div class="muted small">{h(DRIVE_STATES.get(r["state"], r["state"]) if r else "system disk")}</div>'
+        if x["kind"] == "nvme":
+            life = f'{x["wear"]} % worn' if x.get("wear") is not None else "—"
+            if x.get("years_left") is not None:
+                life += (f'<div class="muted small">about {x["years_left"]:g} years left at '
+                         f'{x["wear_per_year"]:g} % a year ({h(x.get("wear_basis", ""))})</div>')
+            if x.get("written_tb") is not None:
+                life += f'<div class="muted small">{x["written_tb"]:g} TB written</div>'
+        elif r.get("state") in ("DHS", "GHS") and x.get("defects") is None:   # an idle spare answers little or nothing
+            life = '<span class="muted">idle spare: no readings</span>'
+        else:
+            errors = [f'{x.get("defects") or 0} remapped']
+            if x.get("pending"):
+                errors.append(f'{x["pending"]} pending')
+            if x.get("uncorrected"):
+                errors.append(f'{x["uncorrected"]} uncorrected')
+            if r.get("media_errors"):
+                errors.append(f'{r["media_errors"]} media errors')
+            life = h(", ".join(errors)) if x.get("defects") is not None else "—"
+        on = f'{x["years_on"]:g} years' if x.get("years_on") is not None else "—"
+        temp = f'{x["temp"]} °C' if x.get("temp") else "—"
+        size = disk_size(x["size"]) if x.get("size") else ""
+        rows.append(f'<tr><td>{h(node)}</td><td>{h(where)}</td><td>{h(x.get("model") or "")}'
+                    f'<div class="muted small">{size}</div></td><td>{state}</td><td>{life}</td><td>{on}</td>'
+                    f'<td>{temp}</td></tr>')
+    return rows
+
+
+def disks_card(report, now):
+    """Every disk of every node: SSD wear, each array disk's state, the arrays (the disk check's report)."""
+    disks = report.get("disks")
+    if not disks:
+        return card("Disk health", '<p class="muted">No report from the disk check yet.</p>') if DISK_CHECK else ""
+    levels = {}
+    for p in disks.get("problems") or []:
+        key = p["key"].rsplit(":", 1)[0]
+        levels[key] = "bad" if p["level"] == "bad" or levels.get(key) == "bad" else "warn"
+    rows, arrays = [], []
+    for node, d in sorted((disks.get("nodes") or {}).items()):
+        if not d.get("reachable"):
+            rows.append(f'<tr><td>{h(node)}</td><td colspan="6" class="bad">not read: {h(d.get("error", ""))}'
+                        '</td></tr>')
+            continue
+        rows += disk_rows(node, d, levels)
+        for a in d.get("arrays") or []:
+            n = sum(1 for x in d["disks"] if x.get("raid"))
+            spares = sum(1 for x in d["disks"] if (x.get("raid") or {}).get("state") in ("DHS", "GHS"))
+            arrays.append(f'<div class="disk-array"><span class="disk-array-node">{h(node)}</span>'
+                          f'<span>{h(a["raid"].replace("RAID", "RAID "))} array of {plural(n - spares, "disk")} + '
+                          f'{plural(spares, "hot spare")}, {h(a["size"])}</span>'
+                          + badge(RAID_STATES.get(a["state"], a["state"]), "ok" if a["state"] == "Optl" else "bad")
+                          + "</div>")
+    t = disks.get("thresholds") or {}
+    heads = "".join(f'<th title="{h(tip)}">{h(name)}</th>' if tip else f"<th>{h(name)}</th>" for name, tip in COLUMNS)
+    table = ('<div class="table-wrap"><table class="table disk-table"><thead><tr>' + heads + "</tr></thead><tbody>"
+             + "".join(rows) + "</tbody></table></div>")
+    foot = (f'<p class="muted small after">Checked {h(fmt_time(disks.get("at")))} ({h(ago(now, disks.get("at")))}), '
+            f'every {t.get("every_hours", 6)} hours. Replace a system SSD when its wear nears 100 % (warning at '
+            f'{t.get("wear_warn", 80)} %, alarm at {t.get("wear_bad", 90)} %); a hard disk when it fails, its remapped '
+            f'sectors keep growing, or the controller predicts a failure. Hard disks over '
+            f'{t.get("hdd_age_warn_years", 5)} years are flagged. Admins get Telegram messages about new problems '
+            '(Account page).</p>')
+    return card("Disk health", (f'<div class="disk-arrays">{"".join(arrays)}</div>' if arrays else "") + table
+                + foot, "flush-head")
 
 
 def timers_card(report, now):
@@ -293,6 +399,7 @@ def health(req, message=""):
         f'<div class="grid nodes">{cards}</div>',
         f'<p class="muted small">Checked {h(fmt_time(report.get("at") or now))}'
         f'{h(health_line(report))}</p>',
+        f'<div class="grid">{disks_card(report, now)}</div>' if report.get("disks") or DISK_CHECK else "",
         '<div class="grid two">', timers_card(report, now), backup_card(report, now), "</div>",
         tasks_card(report, now), logs_cards(report),
     ])

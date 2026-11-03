@@ -1138,7 +1138,8 @@ EVENT_LABELS = [("done", "Job finished successfully"),
                 ("idle", "Idle warning (15 minutes before) and cancellation by the idle check"),
                 ("priority", "An admin gives you priority or reserves CPUs for you (and when it ends), or answers "
                              "your reservation request")]
-ADMIN_EVENT_LABELS = [("requests", "Cluster admins: a member asks for a reservation, or cancels one")]
+ADMIN_EVENT_LABELS = [("requests", "Cluster admins: a member asks for a reservation, or cancels one"),
+                      ("disks", "Cluster admins: a disk problem (a failing or worn disk, a degraded array)")]
 
 
 def account(req, notes="", pw_error="", keys_text=None, key_problems=None):
